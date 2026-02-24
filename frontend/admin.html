@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Admin Panel — Crewly</title>
+  <link rel="stylesheet" href="css/styles.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <script src="js/config.js"></script>
+  <style>
+    /* ── Layout ── */
+    .admin-page {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 60px 28px 100px;
+    }
+
+    /* ── Gate screen ── */
+    #adminGate {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 60vh;
+      gap: 20px;
+      text-align: center;
+    }
+    #adminGate .gate-icon {
+      font-size: 3rem;
+      color: var(--purple);
+      margin-bottom: 8px;
+    }
+    #adminGate h2 {
+      font-size: 1.6rem;
+      font-weight: 900;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+    }
+    #adminGate p {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-bottom: 12px;
+    }
+    .gate-form {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+      max-width: 380px;
+    }
+    .gate-form input {
+      flex: 1;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      padding: 10px 14px;
+      font-size: 0.92rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .gate-form input:focus { border-color: var(--purple); }
+    #gateError {
+      color: #f87171;
+      font-size: 0.82rem;
+      min-height: 18px;
+    }
+
+    /* ── Panel header ── */
+    #adminPanel { display: none; }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+    .panel-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(124,58,237,0.12);
+      border: 1px solid rgba(124,58,237,0.3);
+      color: var(--purple-light);
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .panel-title {
+      font-size: 2rem;
+      font-weight: 900;
+      color: var(--text-bright);
+      letter-spacing: -0.4px;
+    }
+    .panel-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .user-count-pill {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+    .user-count-pill span {
+      color: var(--purple-light);
+      font-weight: 700;
+    }
+
+    /* ── Search bar ── */
+    .search-bar {
+      position: relative;
+      margin-bottom: 20px;
+    }
+    .search-bar i {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+    .search-bar input {
+      width: 100%;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      padding: 10px 14px 10px 38px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      outline: none;
+      box-sizing: border-box;
+      transition: border-color 0.15s;
+    }
+    .search-bar input:focus { border-color: var(--purple); }
+
+    /* ── Table ── */
+    .users-table-wrap {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+    .users-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .users-table thead th {
+      background: rgba(0,0,0,0.25);
+      padding: 12px 18px;
+      text-align: left;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .users-table tbody tr {
+      border-top: 1px solid var(--border);
+      transition: background 0.12s;
+    }
+    .users-table tbody tr:hover { background: rgba(124,58,237,0.05); }
+    .users-table tbody td {
+      padding: 13px 18px;
+      vertical-align: middle;
+    }
+
+    /* avatar + name cell */
+    .user-cell {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .user-avatar {
+      width: 34px; height: 34px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--purple), var(--purple-light));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+      text-transform: uppercase;
+    }
+    .user-name {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+    .user-id-badge {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+
+    /* email cell */
+    .user-email {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+    }
+
+    /* date cell */
+    .user-date {
+      font-size: 0.83rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* terminate button */
+    .btn-terminate {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      color: #f87171;
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+    .btn-terminate:hover {
+      background: rgba(239,68,68,0.2);
+      border-color: rgba(239,68,68,0.6);
+      transform: scale(1.03);
+    }
+    .btn-terminate:active { transform: scale(0.97); }
+    .btn-terminate:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+    /* empty / loading states */
+    .table-state {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    .table-state i {
+      display: block;
+      font-size: 2rem;
+      margin-bottom: 12px;
+      opacity: 0.4;
+    }
+
+    /* toast */
+    .admin-toast {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-size: 0.86rem;
+      font-weight: 600;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+      transition: transform 0.25s ease, opacity 0.25s;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 9999;
+      white-space: nowrap;
+    }
+    .admin-toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+    .admin-toast.error { border-color: rgba(239,68,68,0.5); color: #f87171; }
+    .admin-toast.success { border-color: rgba(34,197,94,0.5); color: #4ade80; }
+
+    /* confirm overlay */
+    .confirm-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.65);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s;
+    }
+    .confirm-overlay.show { opacity: 1; pointer-events: all; }
+    .confirm-box {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 32px;
+      max-width: 380px;
+      width: 90%;
+      text-align: center;
+    }
+    .confirm-box .confirm-icon {
+      font-size: 2.4rem;
+      color: #f87171;
+      margin-bottom: 14px;
+    }
+    .confirm-box h3 {
+      font-size: 1.1rem;
+      font-weight: 900;
+      color: var(--text-bright);
+      margin-bottom: 8px;
+    }
+    .confirm-box p {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      margin-bottom: 22px;
+      line-height: 1.6;
+    }
+    .confirm-box p strong { color: var(--text-primary); }
+    .confirm-btns {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    @media (max-width: 640px) {
+      .users-table thead th:nth-child(3),
+      .users-table tbody td:nth-child(3) { display: none; }
+      .panel-title { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-brand">
+      <div class="nav-logo"><i class="fa-solid fa-bolt"></i></div>
+      <span class="nav-title">Crewly</span>
+    </div>
+    <div class="nav-links">
+      <a href="index.html" class="nav-link"><i class="fa-solid fa-arrow-left"></i> Back to Home</a>
+    </div>
+  </nav>
+
+  <div class="admin-page">
+
+    <!-- ── Gate: prompt for admin key ── -->
+    <div id="adminGate">
+      <div class="gate-icon"><i class="fa-solid fa-shield-halved"></i></div>
+      <h2>Admin Access</h2>
+      <p>Enter the admin key to access the control panel.</p>
+      <div class="gate-form">
+        <input type="password" id="adminKeyInput" placeholder="Admin key…" autocomplete="off"/>
+        <button class="btn btn-primary" id="gateSubmitBtn">Unlock</button>
+      </div>
+      <div id="gateError"></div>
+    </div>
+
+    <!-- ── Main panel (hidden until authenticated) ── -->
+    <div id="adminPanel">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <div class="panel-badge"><i class="fa-solid fa-shield-halved"></i> Admin</div>
+          <div class="panel-title">User Management</div>
+        </div>
+        <div class="panel-actions">
+          <div class="user-count-pill">Total users: <span id="userCount">—</span></div>
+          <button class="btn btn-ghost" id="refreshBtn" style="padding:8px 16px;font-size:0.82rem">
+            <i class="fa-solid fa-rotate-right"></i> Refresh
+          </button>
+          <button class="btn btn-ghost" id="signOutAdminBtn" style="padding:8px 16px;font-size:0.82rem;color:var(--text-muted)">
+            <i class="fa-solid fa-right-from-bracket"></i> Sign Out
+          </button>
+        </div>
+      </div>
+
+      <div class="search-bar">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" id="searchInput" placeholder="Search by name or email…"/>
+      </div>
+
+      <div class="users-table-wrap">
+        <table class="users-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Email</th>
+              <th>Joined</th>
+              <th style="text-align:center">Action</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody">
+            <tr><td colspan="4" class="table-state">
+              <i class="fa-solid fa-spinner fa-spin"></i>Loading users…
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Confirm dialog -->
+  <div class="confirm-overlay" id="confirmOverlay">
+    <div class="confirm-box">
+      <div class="confirm-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+      <h3>Terminate User?</h3>
+      <p id="confirmMsg">This will permanently delete <strong id="confirmName"></strong> from the database. This action cannot be undone.</p>
+      <div class="confirm-btns">
+        <button class="btn btn-ghost" id="confirmCancelBtn" style="flex:1">Cancel</button>
+        <button class="btn" id="confirmOkBtn" style="flex:1;background:#ef4444;color:#fff;border-color:#ef4444">
+          <i class="fa-solid fa-trash"></i> Terminate
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="admin-toast" id="adminToast"></div>
+
+  <script>
+    const API      = typeof API_BASE !== 'undefined' ? API_BASE : 'http://localhost:8000';
+    const GATE_KEY = 'crewly_admin_key';
+
+    let adminKey  = sessionStorage.getItem(GATE_KEY) || '';
+    let allUsers  = [];
+    let pendingDeleteId   = null;
+    let pendingDeleteName = '';
+
+    /* ── Toast ── */
+    function toast(msg, type = '') {
+      const el = document.getElementById('adminToast');
+      el.textContent = msg;
+      el.className = `admin-toast ${type} show`;
+      clearTimeout(el._t);
+      el._t = setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    /* ── Gate ── */
+    function showPanel() {
+      document.getElementById('adminGate').style.display  = 'none';
+      document.getElementById('adminPanel').style.display = 'block';
+      loadUsers();
+    }
+
+    async function unlock() {
+      const key = document.getElementById('adminKeyInput').value.trim();
+      if (!key) return;
+      const errEl = document.getElementById('gateError');
+      const btn   = document.getElementById('gateSubmitBtn');
+      btn.disabled = true; btn.textContent = 'Checking…';
+      errEl.textContent = '';
+      try {
+        const res = await fetch(`${API}/admin/users`, {
+          headers: { 'x-admin-key': key }
+        });
+        if (res.status === 403) { errEl.textContent = 'Invalid admin key.'; return; }
+        if (!res.ok) throw new Error('Server error');
+        adminKey = key;
+        sessionStorage.setItem(GATE_KEY, key);
+        showPanel();
+      } catch (e) {
+        errEl.textContent = 'Could not reach the server.';
+      } finally {
+        btn.disabled = false; btn.textContent = 'Unlock';
+      }
+    }
+
+    document.getElementById('gateSubmitBtn').addEventListener('click', unlock);
+    document.getElementById('adminKeyInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') unlock();
+    });
+
+    document.getElementById('signOutAdminBtn').addEventListener('click', () => {
+      sessionStorage.removeItem(GATE_KEY);
+      adminKey = '';
+      document.getElementById('adminPanel').style.display = 'none';
+      document.getElementById('adminGate').style.display  = 'flex';
+      document.getElementById('adminKeyInput').value = '';
+    });
+
+    /* ── Load users ── */
+    async function loadUsers() {
+      const tbody = document.getElementById('usersTableBody');
+      tbody.innerHTML = `<tr><td colspan="4" class="table-state">
+        <i class="fa-solid fa-spinner fa-spin"></i>Loading…</td></tr>`;
+      try {
+        const res = await fetch(`${API}/admin/users`, {
+          headers: { 'x-admin-key': adminKey }
+        });
+        if (res.status === 403) {
+          sessionStorage.removeItem(GATE_KEY);
+          location.reload(); return;
+        }
+        allUsers = await res.json();
+        document.getElementById('userCount').textContent = allUsers.length;
+        renderTable(allUsers);
+      } catch {
+        tbody.innerHTML = `<tr><td colspan="4" class="table-state">
+          <i class="fa-solid fa-triangle-exclamation"></i>Failed to load users.</td></tr>`;
+      }
+    }
+
+    function renderTable(users) {
+      const tbody = document.getElementById('usersTableBody');
+      if (!users.length) {
+        tbody.innerHTML = `<tr><td colspan="4" class="table-state">
+          <i class="fa-solid fa-users-slash"></i>No users found.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = users.map(u => {
+        const initials = u.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+        const joined   = new Date(u.joined).toLocaleDateString('en-US', {
+          year: 'numeric', month: 'short', day: 'numeric'
+        });
+        const joinedTime = new Date(u.joined).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit'
+        });
+        return `
+        <tr data-id="${u.id}">
+          <td>
+            <div class="user-cell">
+              <div class="user-avatar">${initials}</div>
+              <div>
+                <div class="user-name">${escHtml(u.name)}</div>
+                <div class="user-id-badge">ID #${u.id}</div>
+              </div>
+            </div>
+          </td>
+          <td><span class="user-email">${escHtml(u.email)}</span></td>
+          <td>
+            <div class="user-date">${joined}</div>
+            <div class="user-id-badge">${joinedTime}</div>
+          </td>
+          <td style="text-align:center">
+            <button class="btn-terminate" data-id="${u.id}" data-name="${escAttr(u.name)}">
+              <i class="fa-solid fa-trash-can"></i> Terminate
+            </button>
+          </td>
+        </tr>`;
+      }).join('');
+
+      // Attach terminate listeners
+      tbody.querySelectorAll('.btn-terminate').forEach(btn => {
+        btn.addEventListener('click', () => {
+          pendingDeleteId   = parseInt(btn.dataset.id);
+          pendingDeleteName = btn.dataset.name;
+          document.getElementById('confirmName').textContent = pendingDeleteName;
+          document.getElementById('confirmOverlay').classList.add('show');
+        });
+      });
+    }
+
+    /* ── Search ── */
+    document.getElementById('searchInput').addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      const filtered = allUsers.filter(u =>
+        u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+      );
+      document.getElementById('userCount').textContent = filtered.length;
+      renderTable(filtered);
+    });
+
+    /* ── Refresh ── */
+    document.getElementById('refreshBtn').addEventListener('click', loadUsers);
+
+    /* ── Confirm dialog ── */
+    document.getElementById('confirmCancelBtn').addEventListener('click', () => {
+      document.getElementById('confirmOverlay').classList.remove('show');
+      pendingDeleteId = null;
+    });
+    document.getElementById('confirmOverlay').addEventListener('click', e => {
+      if (e.target === document.getElementById('confirmOverlay')) {
+        document.getElementById('confirmOverlay').classList.remove('show');
+        pendingDeleteId = null;
+      }
+    });
+
+    document.getElementById('confirmOkBtn').addEventListener('click', async () => {
+      if (!pendingDeleteId) return;
+      const okBtn = document.getElementById('confirmOkBtn');
+      okBtn.disabled = true; okBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting…';
+      try {
+        const res = await fetch(`${API}/admin/users/${pendingDeleteId}`, {
+          method: 'DELETE',
+          headers: { 'x-admin-key': adminKey }
+        });
+        if (!res.ok) throw new Error('Delete failed');
+        // Remove row from DOM instantly
+        const row = document.querySelector(`tr[data-id="${pendingDeleteId}"]`);
+        if (row) {
+          row.style.opacity = '0';
+          row.style.transition = 'opacity 0.3s';
+          setTimeout(() => row.remove(), 300);
+        }
+        allUsers = allUsers.filter(u => u.id !== pendingDeleteId);
+        document.getElementById('userCount').textContent = allUsers.length;
+        toast(`✓ ${pendingDeleteName} has been permanently removed.`, 'success');
+      } catch {
+        toast('Failed to terminate user. Try again.', 'error');
+      } finally {
+        document.getElementById('confirmOverlay').classList.remove('show');
+        pendingDeleteId = null;
+        okBtn.disabled = false;
+        okBtn.innerHTML = '<i class="fa-solid fa-trash"></i> Terminate';
+      }
+    });
+
+    /* ── Helpers ── */
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function escAttr(s) {
+      return s.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    /* ── Auto-login if session key exists ── */
+    if (adminKey) showPanel();
+  </script>
+</body>
+</html>

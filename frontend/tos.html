@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Terms of Service — Crewly</title>
+  <link rel="stylesheet" href="css/styles.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <style>
+    .tos-page {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 60px 32px 100px;
+    }
+    .tos-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.88rem;
+      margin-bottom: 36px;
+      transition: color 0.15s;
+    }
+    .tos-back:hover { color: var(--purple-light); }
+
+    .tos-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(124,58,237,0.12);
+      border: 1px solid rgba(124,58,237,0.3);
+      color: var(--purple-light);
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 999px;
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .tos-title {
+      font-size: 2.4rem;
+      font-weight: 900;
+      color: var(--text-bright);
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+    .tos-updated {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 48px;
+    }
+
+    .tos-toc {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px 28px;
+      margin-bottom: 48px;
+    }
+    .tos-toc h3 {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+    .tos-toc ol {
+      padding-left: 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 24px;
+    }
+    .tos-toc ol li { font-size: 0.88rem; }
+    .tos-toc ol li a {
+      color: var(--purple-light);
+      text-decoration: none;
+    }
+    .tos-toc ol li a:hover { text-decoration: underline; }
+
+    .tos-section {
+      margin-bottom: 44px;
+      scroll-margin-top: 80px;
+    }
+    .tos-section h2 {
+      font-size: 1.2rem;
+      font-weight: 900;
+      color: var(--text-bright);
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .tos-section h2 .sec-num {
+      background: rgba(124,58,237,0.15);
+      color: var(--purple-light);
+      font-size: 0.78rem;
+      font-weight: 700;
+      width: 26px; height: 26px;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .tos-section p {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+      margin-bottom: 12px;
+    }
+    .tos-section ul {
+      padding-left: 20px;
+      margin-bottom: 12px;
+    }
+    .tos-section ul li {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+      margin-bottom: 4px;
+    }
+    .tos-section ul li::marker { color: var(--purple-light); }
+    .tos-section strong { color: var(--text-primary); }
+
+    .tos-highlight {
+      background: rgba(124,58,237,0.08);
+      border-left: 3px solid var(--purple);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: 0.9rem;
+      color: var(--text-primary);
+      line-height: 1.7;
+    }
+
+    .tos-footer-note {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px 28px;
+      text-align: center;
+      margin-top: 56px;
+    }
+    .tos-footer-note p { font-size: 0.88rem; color: var(--text-muted); margin: 0; }
+    .tos-footer-note a { color: var(--purple-light); text-decoration: none; }
+    .tos-footer-note a:hover { text-decoration: underline; }
+
+    @media (max-width: 600px) {
+      .tos-toc ol { grid-template-columns: 1fr; }
+      .tos-title { font-size: 1.8rem; }
+      .tos-page { padding: 40px 20px 80px; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-brand">
+      <div class="nav-logo"><i class="fa-solid fa-bolt"></i></div>
+      <span class="nav-title">Crewly</span>
+    </div>
+    <div class="nav-links">
+      <a href="index.html" class="nav-link"><i class="fa-solid fa-arrow-left"></i> Back to Home</a>
+    </div>
+  </nav>
+
+  <div class="tos-page">
+    <a href="index.html" class="tos-back">
+      <i class="fa-solid fa-arrow-left"></i> Back to Crewly
+    </a>
+
+    <div class="tos-badge"><i class="fa-solid fa-file-contract"></i> Legal</div>
+    <h1 class="tos-title">Terms of Service</h1>
+    <p class="tos-updated">Last updated: February 24, 2026</p>
+
+    <!-- TABLE OF CONTENTS -->
+    <div class="tos-toc">
+      <h3><i class="fa-solid fa-list"></i> &nbsp;Table of Contents</h3>
+      <ol>
+        <li><a href="#acceptance">Acceptance of Terms</a></li>
+        <li><a href="#eligibility">Eligibility</a></li>
+        <li><a href="#accounts">Accounts & Registration</a></li>
+        <li><a href="#use">Acceptable Use</a></li>
+        <li><a href="#meetings">Meetings & Communications</a></li>
+        <li><a href="#privacy">Privacy</a></li>
+        <li><a href="#ip">Intellectual Property</a></li>
+        <li><a href="#disclaimer">Disclaimer of Warranties</a></li>
+        <li><a href="#liability">Limitation of Liability</a></li>
+        <li><a href="#termination">Termination</a></li>
+        <li><a href="#changes">Changes to Terms</a></li>
+        <li><a href="#contact">Contact Us</a></li>
+      </ol>
+    </div>
+
+    <!-- SECTIONS -->
+    <div class="tos-section" id="acceptance">
+      <h2><span class="sec-num">1</span> Acceptance of Terms</h2>
+      <p>By accessing or using Crewly ("the Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, please do not use the Service.</p>
+      <p>These Terms apply to all visitors, users, and others who access or use the Service, whether or not they have created an account.</p>
+      <div class="tos-highlight">
+        Using Crewly — including joining a meeting as a guest — constitutes your acceptance of these Terms.
+      </div>
+    </div>
+
+    <div class="tos-section" id="eligibility">
+      <h2><span class="sec-num">2</span> Eligibility</h2>
+      <p>You must be at least <strong>13 years of age</strong> to use this Service. By using Crewly, you represent and warrant that you meet this minimum age requirement.</p>
+      <p>If you are using Crewly on behalf of an organization, you represent that you have the authority to bind that organization to these Terms.</p>
+    </div>
+
+    <div class="tos-section" id="accounts">
+      <h2><span class="sec-num">3</span> Accounts & Registration</h2>
+      <p>You may use parts of the Service (such as video calls) without registering. However, certain features — including in-call chat — require a registered account.</p>
+      <ul>
+        <li>You are responsible for maintaining the confidentiality of your account credentials.</li>
+        <li>You are responsible for all activity that occurs under your account.</li>
+        <li>You agree to provide accurate and current information when registering.</li>
+        <li>You must notify us immediately of any unauthorized use of your account.</li>
+      </ul>
+    </div>
+
+    <div class="tos-section" id="use">
+      <h2><span class="sec-num">4</span> Acceptable Use</h2>
+      <p>You agree not to use the Service to:</p>
+      <ul>
+        <li>Transmit any content that is unlawful, harmful, threatening, abusive, harassing, defamatory, or otherwise objectionable.</li>
+        <li>Impersonate any person or entity or misrepresent your affiliation with any person or entity.</li>
+        <li>Upload or transmit viruses or any other malicious code.</li>
+        <li>Attempt to gain unauthorized access to any portion of the Service or its related systems.</li>
+        <li>Interfere with or disrupt the integrity or performance of the Service.</li>
+        <li>Collect or harvest any personally identifiable information from the Service.</li>
+        <li>Use the Service for any commercial solicitation without our prior written consent.</li>
+      </ul>
+      <p>We reserve the right to terminate access for any user who violates these guidelines.</p>
+    </div>
+
+    <div class="tos-section" id="meetings">
+      <h2><span class="sec-num">5</span> Meetings & Communications</h2>
+      <p>Crewly provides real-time video, audio, and chat communication tools. By using these features:</p>
+      <ul>
+        <li>You acknowledge that meetings may be joined by others who have the meeting code.</li>
+        <li>You are solely responsible for the content you share during meetings.</li>
+        <li>You should not share sensitive, private, or confidential information in unprotected meetings.</li>
+        <li>Crewly does not record meetings by default. If recording is added in the future, users will be notified.</li>
+      </ul>
+      <div class="tos-highlight">
+        <strong>Guest users</strong> may join video and audio calls freely without an account. In-call chat is restricted to registered users only.
+      </div>
+    </div>
+
+    <div class="tos-section" id="privacy">
+      <h2><span class="sec-num">6</span> Privacy</h2>
+      <p>Your use of the Service is also governed by our Privacy Policy. By using Crewly, you consent to the collection and use of information as described therein.</p>
+      <p>We take reasonable steps to protect your information, but no method of transmission over the internet is 100% secure. You use the Service at your own risk.</p>
+      <p>We do not sell your personal data to third parties.</p>
+    </div>
+
+    <div class="tos-section" id="ip">
+      <h2><span class="sec-num">7</span> Intellectual Property</h2>
+      <p>The Service and its original content, features, and functionality are and will remain the exclusive property of Crewly and its licensors.</p>
+      <p>You may not copy, modify, distribute, sell, or lease any part of our Service without prior written consent.</p>
+      <p>Content you share during meetings remains your own. You grant Crewly a limited, non-exclusive license to transmit that content solely for the purpose of providing the Service.</p>
+    </div>
+
+    <div class="tos-section" id="disclaimer">
+      <h2><span class="sec-num">8</span> Disclaimer of Warranties</h2>
+      <p>The Service is provided on an <strong>"as is" and "as available"</strong> basis without warranties of any kind, either express or implied.</p>
+      <p>Crewly does not warrant that:</p>
+      <ul>
+        <li>The Service will be uninterrupted, timely, secure, or error-free.</li>
+        <li>The results obtained from using the Service will be accurate or reliable.</li>
+        <li>Any errors in the Service will be corrected.</li>
+      </ul>
+    </div>
+
+    <div class="tos-section" id="liability">
+      <h2><span class="sec-num">9</span> Limitation of Liability</h2>
+      <p>To the maximum extent permitted by applicable law, Crewly and its team shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from your use of the Service.</p>
+      <p>In no event shall our total liability to you exceed the amount you paid us (if any) in the past twelve (12) months.</p>
+    </div>
+
+    <div class="tos-section" id="termination">
+      <h2><span class="sec-num">10</span> Termination</h2>
+      <p>We may terminate or suspend your access to the Service immediately, without prior notice, for any reason — including breach of these Terms.</p>
+      <p>Upon termination, your right to use the Service will immediately cease. All provisions of these Terms which by their nature should survive termination shall survive.</p>
+    </div>
+
+    <div class="tos-section" id="changes">
+      <h2><span class="sec-num">11</span> Changes to Terms</h2>
+      <p>We reserve the right to modify these Terms at any time. We will indicate the date of the most recent update at the top of this page.</p>
+      <p>Your continued use of the Service after any changes constitutes your acceptance of the new Terms. If you do not agree to the updated Terms, please stop using the Service.</p>
+    </div>
+
+    <div class="tos-section" id="contact">
+      <h2><span class="sec-num">12</span> Contact Us</h2>
+      <p>If you have any questions about these Terms, please reach out:</p>
+      <ul>
+        <li><strong>Email:</strong> support@crewly.app</li>
+        <li><strong>Website:</strong> <a href="index.html" style="color:var(--purple-light)">crewly.app</a></li>
+      </ul>
+    </div>
+
+    <div class="tos-footer-note">
+      <p>By using Crewly you agree to these Terms. &nbsp;·&nbsp; <a href="index.html">Back to Home</a></p>
+    </div>
+  </div>
+</body>
+</html>

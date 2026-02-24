@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Crewly — Collaborate Without Limits</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <script src="js/config.js"></script>
+</head>
+<body class="home-body">
+
+  <!-- NAV -->
+  <nav class="nav">
+    <div class="nav-brand">
+      <div class="nav-logo">
+        <i class="fa-solid fa-bolt"></i>
+      </div>
+      <span class="nav-title">Crewly</span>
+    </div>
+    <div class="nav-links">
+      <a href="#features" class="nav-link">Features</a>
+      <a href="#" class="nav-link">Pricing</a>
+      <button class="btn btn-ghost" id="signInBtn">Sign In</button>
+      <button class="btn btn-primary" id="signUpBtn">Sign Up Free</button>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-content">
+      <p class="hero-eyebrow"><i class="fa-solid fa-circle-dot pulse"></i> No account needed to start a call</p>
+      <h1 class="hero-title">Where your team<br/><span class="gradient-text">actually connects.</span></h1>
+      <p class="hero-sub">High-quality video meetings, real-time chat, and stunning virtual backgrounds — all in one place. Jump in instantly, no sign-up required.</p>
+
+      <div class="hero-actions">
+        <button class="btn btn-primary btn-lg" id="newMeetingBtn">
+          <i class="fa-solid fa-video"></i> New Meeting
+        </button>
+        <div class="join-box">
+          <input type="text" id="meetingCodeInput" class="join-input" placeholder="Enter meeting code…" maxlength="12" />
+          <button class="btn btn-secondary btn-lg" id="joinMeetingBtn">
+            <i class="fa-solid fa-arrow-right-to-bracket"></i> Join
+          </button>
+        </div>
+      </div>
+
+      <p class="hero-note"><i class="fa-solid fa-users"></i> Up to 30 participants per meeting</p>
+    </div>
+
+    <div class="hero-visual">
+      <div class="meeting-preview">
+        <div class="preview-header">
+          <span class="preview-dot red"></span>
+          <span class="preview-dot yellow"></span>
+          <span class="preview-dot green"></span>
+          <span class="preview-title">Crewly Meeting</span>
+        </div>
+        <div class="preview-grid">
+          <div class="preview-tile active">
+            <div class="preview-avatar" style="background:#7C3AED">A</div>
+            <span>Alex</span>
+          </div>
+          <div class="preview-tile">
+            <div class="preview-avatar" style="background:#059669">B</div>
+            <span>Blake</span>
+          </div>
+          <div class="preview-tile">
+            <div class="preview-avatar" style="background:#DC2626">C</div>
+            <span>Casey</span>
+          </div>
+          <div class="preview-tile">
+            <div class="preview-avatar" style="background:#D97706">D</div>
+            <span>Drew</span>
+          </div>
+        </div>
+        <div class="preview-chat">
+          <div class="preview-msg"><span style="color:#7C3AED">Alex</span> Hey team 👋</div>
+          <div class="preview-msg"><span style="color:#059669">Blake</span> Ready to start!</div>
+          <div class="preview-msg"><span style="color:#DC2626">Casey</span> Let's go 🚀</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="features">
+    <h2 class="section-title">Everything you need. Nothing you don't.</h2>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-bolt-lightning"></i></div>
+        <h3>Instant Meetings</h3>
+        <p>No account required. Generate a code and share — your team joins in seconds.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-comments"></i></div>
+        <h3>In-Call Chat</h3>
+        <p>Chat with everyone or privately during a call. Messages stay in the session feed.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-image"></i></div>
+        <h3>Virtual Backgrounds</h3>
+        <p>Built-in premium wallpapers you can also download. Change your background mid-call.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-users"></i></div>
+        <h3>Up to 30 People</h3>
+        <p>Large enough for your whole team, tight enough to keep it productive.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-lock"></i></div>
+        <h3>Private Rooms</h3>
+        <p>Password-protect your meeting so only the right people get in.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-desktop"></i></div>
+        <h3>Screen Sharing</h3>
+        <p>Share your entire screen or a single window with one click.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="footer-brand">
+      <i class="fa-solid fa-bolt"></i> Crewly
+    </div>
+    <div class="footer-links">
+      <a href="tos.html" class="footer-link">Terms of Service</a>
+      <span style="color:var(--border)">·</span>
+      <a href="admin.html" class="footer-link"><i class="fa-solid fa-shield-halved" style="font-size:0.75em"></i> Admin Panel</a>
+    </div>
+    <p class="footer-copy">© 2026 Crewly. Built for teams that move fast.</p>
+  </footer>
+
+  <!-- AUTH MODAL -->
+  <div class="modal-overlay hidden" id="authModal">
+    <div class="modal">
+      <button class="modal-close" id="closeModal"><i class="fa-solid fa-xmark"></i></button>
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-tab="signin">Sign In</button>
+        <button class="modal-tab" data-tab="signup">Sign Up</button>
+      </div>
+
+      <div class="modal-body" id="signinForm">
+        <h2>Welcome back</h2>
+        <input type="email" id="signinEmail" placeholder="Email" class="modal-input" />
+        <input type="password" id="signinPassword" placeholder="Password" class="modal-input" />
+        <button class="btn btn-primary full-width" id="doSignInBtn">Sign In</button>
+        <div class="modal-divider"><span>or</span></div>
+        <button class="btn btn-outline full-width" id="continueGuestBtn">
+          <i class="fa-solid fa-ghost"></i> Continue as Guest
+        </button>
+      </div>
+
+      <div class="modal-body hidden" id="signupForm">
+        <h2>Create your account</h2>
+        <input type="text" id="signupName" placeholder="Display name" class="modal-input" />
+        <input type="email" id="signupEmail" placeholder="Email" class="modal-input" />
+        <input type="password" id="signupPassword" placeholder="Password" class="modal-input" />
+        <button class="btn btn-primary full-width" id="doSignUpBtn">Create Account</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = typeof API_BASE !== 'undefined' ? API_BASE : 'http://localhost:8000';
+
+    function generateCode() {
+      return Math.random().toString(36).substring(2, 10).toUpperCase();
+    }
+
+    /* ── Auth helpers ── */
+    function getUser()  { try { return JSON.parse(localStorage.getItem('crewly_user')); } catch { return null; } }
+    function saveUser(u, token) {
+      localStorage.setItem('crewly_user', JSON.stringify(u));
+      if (token) localStorage.setItem('crewly_token', token);
+    }
+    function signOut()  {
+      localStorage.removeItem('crewly_user');
+      localStorage.removeItem('crewly_token');
+      updateNav();
+    }
+
+    function updateNav() {
+      const user = getUser();
+      const signInBtn  = document.getElementById('signInBtn');
+      const signUpBtn  = document.getElementById('signUpBtn');
+      const navLinks   = document.querySelector('.nav-links');
+
+      // Remove existing signed-in pill if any
+      const existing = document.getElementById('navUserPill');
+      if (existing) existing.remove();
+
+      if (user) {
+        signInBtn.classList.add('hidden');
+        signUpBtn.classList.add('hidden');
+        const pill = document.createElement('div');
+        pill.id = 'navUserPill';
+        pill.style.cssText = 'display:flex;align-items:center;gap:10px;';
+        pill.innerHTML = `
+          <span style="font-size:0.85rem;color:var(--text-muted)">Signed in as <strong style="color:var(--text-bright)">${user.name}</strong></span>
+          <button class="btn btn-ghost" onclick="signOut()" style="padding:6px 14px;font-size:0.82rem">Sign Out</button>
+        `;
+        navLinks.appendChild(pill);
+      } else {
+        signInBtn.classList.remove('hidden');
+        signUpBtn.classList.remove('hidden');
+      }
+    }
+
+    // Run on load
+    updateNav();
+
+    /* ── Navigation ── */
+    document.getElementById('newMeetingBtn').addEventListener('click', () => {
+      const code = generateCode();
+      window.location.href = `meeting.html?room=${code}&host=true`;
+    });
+
+    document.getElementById('joinMeetingBtn').addEventListener('click', () => {
+      const code = document.getElementById('meetingCodeInput').value.trim().toUpperCase();
+      if (!code) return alert('Please enter a meeting code.');
+      window.location.href = `meeting.html?room=${code}`;
+    });
+
+    document.getElementById('meetingCodeInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('joinMeetingBtn').click();
+    });
+
+    /* ── Auth modal open ── */
+    document.getElementById('signInBtn').addEventListener('click', () => {
+      document.getElementById('authModal').classList.remove('hidden');
+    });
+    document.getElementById('signUpBtn').addEventListener('click', () => {
+      document.getElementById('authModal').classList.remove('hidden');
+      document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+      document.querySelector('[data-tab="signup"]').classList.add('active');
+      document.getElementById('signinForm').classList.add('hidden');
+      document.getElementById('signupForm').classList.remove('hidden');
+    });
+    document.getElementById('closeModal').addEventListener('click', () => {
+      document.getElementById('authModal').classList.add('hidden');
+    });
+
+    document.querySelectorAll('.modal-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        if (tab.dataset.tab === 'signin') {
+          document.getElementById('signinForm').classList.remove('hidden');
+          document.getElementById('signupForm').classList.add('hidden');
+        } else {
+          document.getElementById('signinForm').classList.add('hidden');
+          document.getElementById('signupForm').classList.remove('hidden');
+        }
+      });
+    });
+
+    /* ── Sign In ── */
+    document.getElementById('doSignInBtn').addEventListener('click', async () => {
+      const email = document.getElementById('signinEmail').value.trim();
+      const pass  = document.getElementById('signinPassword').value;
+      if (!email || !pass) return alert('Please enter your email and password.');
+
+      const btn = document.getElementById('doSignInBtn');
+      btn.disabled = true; btn.textContent = 'Signing in…';
+      try {
+        const res  = await fetch(`${API}/auth/signin`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ email, password: pass })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Sign in failed');
+        saveUser(data.user, data.token);
+        document.getElementById('authModal').classList.add('hidden');
+        updateNav();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Sign In';
+      }
+    });
+
+    /* ── Sign Up ── */
+    document.getElementById('doSignUpBtn').addEventListener('click', async () => {
+      const name  = document.getElementById('signupName').value.trim();
+      const email = document.getElementById('signupEmail').value.trim();
+      const pass  = document.getElementById('signupPassword').value;
+      if (!name || !email || !pass) return alert('Please fill in all fields.');
+      if (pass.length < 6) return alert('Password must be at least 6 characters.');
+
+      const btn = document.getElementById('doSignUpBtn');
+      btn.disabled = true; btn.textContent = 'Creating account…';
+      try {
+        const res  = await fetch(`${API}/auth/signup`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name, email, password: pass })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Sign up failed');
+        saveUser(data.user, data.token);
+        document.getElementById('authModal').classList.add('hidden');
+        updateNav();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Create Account';
+      }
+    });
+
+    /* ── Guest ── */
+    document.getElementById('continueGuestBtn').addEventListener('click', () => {
+      const code = generateCode();
+      window.location.href = `meeting.html?guest=true&room=${code}`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Crewly — Meeting</title>
+  <link rel="stylesheet" href="css/styles.css"/>
+  <link rel="stylesheet" href="css/meeting.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+</head>
+<body class="meeting-body">
+
+  <!-- PRE-JOIN LOBBY -->
+  <div id="lobby" class="lobby">
+    <div class="lobby-card">
+      <div class="lobby-logo"><i class="fa-solid fa-bolt"></i>Crewly</div>
+      <h2 class="lobby-title">Ready to join?</h2>
+
+      <div class="lobby-preview-wrapper">
+        <video id="lobbyPreview" autoplay muted playsinline class="lobby-video"></video>
+        <canvas id="lobbyCanvas" class="lobby-canvas hidden"></canvas>
+        <div class="lobby-no-cam hidden" id="lobbyNoCam">
+          <div class="avatar-big" id="lobbyAvatar">?</div>
+          <p class="cam-denied-msg hidden" id="camDeniedMsg">Camera blocked.<br/>Check browser permissions.</p>
+        </div>
+      </div>
+
+      <div class="lobby-controls">
+        <button class="lobby-ctrl-btn" id="toggleLobbyMic" title="Toggle Mic">
+          <i class="fa-solid fa-microphone"></i>
+        </button>
+        <button class="lobby-ctrl-btn" id="toggleLobbyCam" title="Toggle Camera">
+          <i class="fa-solid fa-video"></i>
+        </button>
+      </div>
+
+      <div class="lobby-name-row">
+        <input type="text" id="displayName" class="lobby-name-input" placeholder="Your display name" maxlength="24"/>
+      </div>
+
+      <div class="lobby-room-info">
+        <span><i class="fa-solid fa-hashtag"></i> Room: <strong id="roomCodeDisplay"></strong></span>
+        <button class="copy-btn" id="copyRoomBtn" title="Copy room code"><i class="fa-regular fa-copy"></i></button>
+      </div>
+
+      <button class="btn btn-primary btn-lg full-width" id="joinNowBtn">
+        <i class="fa-solid fa-arrow-right-to-bracket"></i> Join Now
+      </button>
+
+      <a href="index.html" class="lobby-back"><i class="fa-solid fa-arrow-left"></i> Back to Home</a>
+    </div>
+  </div>
+
+  <!-- MEETING ROOM -->
+  <div id="meetingRoom" class="meeting-room hidden">
+
+    <!-- LEFT SIDEBAR (Slack-style) -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo"><i class="fa-solid fa-bolt"></i></div>
+        <div class="sidebar-room-name">
+          <span class="sidebar-workspace">Crewly</span>
+          <span class="sidebar-room-code" id="sidebarRoomCode"></span>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">In this meeting</div>
+        <ul class="participant-list" id="participantList">
+          <!-- dynamically populated -->
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Meeting info</div>
+        <div class="sidebar-info-row">
+          <i class="fa-solid fa-clock"></i>
+          <span id="meetingTimer">00:00</span>
+        </div>
+        <div class="sidebar-info-row">
+          <i class="fa-solid fa-users"></i>
+          <span id="participantCount">1 / 30</span>
+        </div>
+        <div class="sidebar-info-row copy-row">
+          <i class="fa-solid fa-link"></i>
+          <span id="sidebarRoomCodeCopy"></span>
+          <button class="copy-btn-small" id="copyMeetingLink"><i class="fa-regular fa-copy"></i></button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN VIDEO AREA -->
+    <main class="video-main">
+      <div class="video-topbar">
+        <span class="video-topbar-title" id="topbarTitle">Crewly Meeting</span>
+        <div class="video-topbar-actions">
+          <button class="topbar-btn" id="toggleLayout" title="Change layout">
+            <i class="fa-solid fa-table-cells"></i>
+          </button>
+          <button class="topbar-btn" id="toggleParticipantsPanel" title="Participants">
+            <i class="fa-solid fa-users"></i>
+          </button>
+          <button class="topbar-btn" id="toggleChatBtn" title="Chat">
+            <i class="fa-solid fa-comment-dots"></i>
+            <span class="chat-badge hidden" id="chatBadge">0</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- VIDEO GRID -->
+      <div class="video-grid" id="videoGrid">
+        <!-- Local tile -->
+        <div class="video-tile local-tile" id="localTile">
+          <video id="localVideo" autoplay muted playsinline></video>
+          <canvas id="localCanvas"></canvas>
+          <div class="tile-no-cam hidden" id="localNoCam">
+            <div class="avatar-tile" id="localAvatar">?</div>
+          </div>
+          <div class="tile-overlay">
+            <span class="tile-name" id="localName">You</span>
+            <div class="tile-indicators">
+              <span class="tile-icon muted hidden" id="localMicIcon"><i class="fa-solid fa-microphone-slash"></i></span>
+            </div>
+          </div>
+          <div class="tile-speaking-ring" id="localSpeakingRing"></div>
+        </div>
+      </div>
+
+      <!-- BOTTOM TOOLBAR -->
+      <div class="toolbar">
+        <div class="toolbar-group">
+          <button class="tool-btn" id="toggleMic" title="Mute / Unmute">
+            <i class="fa-solid fa-microphone"></i>
+            <span>Mute</span>
+          </button>
+          <button class="tool-btn" id="toggleCam" title="Camera on/off">
+            <i class="fa-solid fa-video"></i>
+            <span>Camera</span>
+          </button>
+        </div>
+
+        <div class="toolbar-group">
+          <button class="tool-btn" id="toggleScreen" title="Share screen">
+            <i class="fa-solid fa-display"></i>
+            <span>Share</span>
+          </button>
+          <button class="tool-btn" id="toggleBgBtn" title="Virtual background">
+            <i class="fa-solid fa-image"></i>
+            <span>Background</span>
+          </button>
+          <button class="tool-btn" id="openChatToolbar" title="Chat">
+            <i class="fa-solid fa-comment-dots"></i>
+            <span>Chat</span>
+          </button>
+        </div>
+
+        <div class="toolbar-group">
+          <button class="tool-btn leave-btn" id="leaveBtn" title="Leave meeting">
+            <i class="fa-solid fa-phone-slash"></i>
+            <span>Leave</span>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- CHAT PANEL -->
+    <aside class="chat-panel" id="chatPanel">
+      <div class="chat-header">
+        <div class="chat-title"><i class="fa-solid fa-comment-dots"></i> Meeting Chat</div>
+        <button class="chat-close" id="closeChatBtn"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="chat-messages" id="chatMessages">
+        <div class="chat-system-msg">Chat started. Say hello! 👋</div>
+      </div>
+
+      <div class="chat-input-area">
+        <div class="chat-input-row">
+          <button class="chat-emoji-btn" id="emojiBtn" title="Emoji">
+            <i class="fa-regular fa-face-smile"></i>
+          </button>
+          <textarea
+            id="chatInput"
+            class="chat-input"
+            placeholder="Message everyone…"
+            rows="1"
+            maxlength="500"
+          ></textarea>
+          <button class="chat-send-btn" id="sendChatBtn">
+            <i class="fa-solid fa-paper-plane"></i>
+          </button>
+        </div>
+        <div class="emoji-picker hidden" id="emojiPicker">
+          😀 😂 👍 🎉 🔥 💯 👋 🚀 ❤️ 😮 😢 😡
+        </div>
+      </div>
+    </aside>
+
+    <!-- BACKGROUNDS PANEL -->
+    <div class="bg-panel hidden" id="bgPanel">
+      <div class="bg-panel-header">
+        <span><i class="fa-solid fa-image"></i> Virtual Backgrounds</span>
+        <button id="closeBgPanel"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="bg-options" id="bgOptions">
+        <div class="bg-option active" data-bg="none">
+          <div class="bg-thumb no-bg"><i class="fa-solid fa-ban"></i></div>
+          <span>None</span>
+        </div>
+        <div class="bg-option" data-bg="blur">
+          <div class="bg-thumb blur-thumb"></div>
+          <span>Blur</span>
+        </div>
+        <div class="bg-option" data-bg="bg1">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#1e3a5f,#0f2027)"></div>
+          <span>Deep Blue</span>
+          <button class="dl-btn" data-name="deep-blue"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg2">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#200122,#6f0000)"></div>
+          <span>Deep Red</span>
+          <button class="dl-btn" data-name="deep-red"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg3">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#0f3460,#533483)"></div>
+          <span>Galaxy</span>
+          <button class="dl-btn" data-name="galaxy"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg4">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#134e5e,#71b280)"></div>
+          <span>Forest</span>
+          <button class="dl-btn" data-name="forest"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg5">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#373B44,#4286f4)"></div>
+          <span>Sky Office</span>
+          <button class="dl-btn" data-name="sky-office"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg6">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#4e0000,#9b1a1a,#4e0000)"></div>
+          <span>Dark Ember</span>
+          <button class="dl-btn" data-name="dark-ember"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg7">
+          <div class="bg-thumb" style="background: radial-gradient(circle at 20% 50%,#1a1a2e,#16213e,#0f3460)"></div>
+          <span>Midnight</span>
+          <button class="dl-btn" data-name="midnight"><i class="fa-solid fa-download"></i></button>
+        </div>
+        <div class="bg-option" data-bg="bg8">
+          <div class="bg-thumb" style="background: linear-gradient(135deg,#f5f7fa,#c3cfe2)"></div>
+          <span>Clean White</span>
+          <button class="dl-btn" data-name="clean-white"><i class="fa-solid fa-download"></i></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEAVE CONFIRM -->
+    <div class="leave-modal hidden" id="leaveModal">
+      <div class="leave-card">
+        <h3>Leave meeting?</h3>
+        <p>You'll be disconnected from everyone in this call.</p>
+        <div class="leave-btns">
+          <button class="btn btn-ghost" id="cancelLeave">Cancel</button>
+          <button class="btn leave-btn" id="confirmLeave">Leave</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end meetingRoom -->
+
+  <script src="js/config.js"></script>
+  <!-- MediaPipe Selfie Segmentation (real background replacement) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+  <script src="js/backgrounds.js"></script>
+  <script src="js/webrtc.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/meeting.js"></script>
+</body>
+</html>
