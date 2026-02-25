@@ -1,13 +1,13 @@
-databases:
-  - name: crewly-db
-    databaseName: crewly
-    user: crewly
+﻿databases:
+  - name: syncora-db
+    databaseName: syncora
+    user: syncora
     region: oregon
     plan: free
 
 services:
   - type: web
-    name: crewly-backend
+    name: syncora-backend
     env: python
     region: oregon
     rootDir: backend
@@ -19,7 +19,7 @@ services:
         value: "3.11.0"
       - key: DATABASE_URL
         fromDatabase:
-          name: crewly-db
+          name: syncora-db
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
@@ -27,7 +27,7 @@ services:
         sync: false   # set this manually in Render dashboard
 
   - type: web
-    name: crewly-frontend
+    name: syncora-frontend
     env: static
     region: oregon
     rootDir: frontend

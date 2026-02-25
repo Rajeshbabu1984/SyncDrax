@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Crewly — Collaborate Without Limits</title>
+  <title>Syncora — Collaborate Without Limits</title>
   <link rel="stylesheet" href="css/styles.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,7 +19,7 @@
       <div class="nav-logo">
         <i class="fa-solid fa-bolt"></i>
       </div>
-      <span class="nav-title">Crewly</span>
+      <span class="nav-title">Syncora</span>
     </div>
     <div class="nav-links">
       <a href="#features" class="nav-link">Features</a>
@@ -57,7 +57,7 @@
           <span class="preview-dot red"></span>
           <span class="preview-dot yellow"></span>
           <span class="preview-dot green"></span>
-          <span class="preview-title">Crewly Meeting</span>
+          <span class="preview-title">Syncora Meeting</span>
         </div>
         <div class="preview-grid">
           <div class="preview-tile active">
@@ -126,14 +126,14 @@
   <!-- FOOTER -->
   <footer class="footer">
     <div class="footer-brand">
-      <i class="fa-solid fa-bolt"></i> Crewly
+      <i class="fa-solid fa-bolt"></i> Syncora
     </div>
     <div class="footer-links">
       <a href="tos.html" class="footer-link">Terms of Service</a>
       <span style="color:var(--border)">·</span>
       <a href="admin.html" class="footer-link"><i class="fa-solid fa-shield-halved" style="font-size:0.75em"></i> Admin Panel</a>
     </div>
-    <p class="footer-copy">© 2026 Crewly. Built for teams that move fast.</p>
+    <p class="footer-copy">© 2026 Syncora. Built for teams that move fast.</p>
   </footer>
 
   <!-- AUTH MODAL -->
@@ -174,14 +174,14 @@
     }
 
     /* ── Auth helpers ── */
-    function getUser()  { try { return JSON.parse(localStorage.getItem('crewly_user')); } catch { return null; } }
+    function getUser()  { try { return JSON.parse(localStorage.getItem('syncora_user')); } catch { return null; } }
     function saveUser(u, token) {
-      localStorage.setItem('crewly_user', JSON.stringify(u));
-      if (token) localStorage.setItem('crewly_token', token);
+      localStorage.setItem('syncora_user', JSON.stringify(u));
+      if (token) localStorage.setItem('syncora_token', token);
     }
     function signOut()  {
-      localStorage.removeItem('crewly_user');
-      localStorage.removeItem('crewly_token');
+      localStorage.removeItem('syncora_user');
+      localStorage.removeItem('syncora_token');
       updateNav();
     }
 

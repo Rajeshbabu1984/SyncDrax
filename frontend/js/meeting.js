@@ -1,5 +1,5 @@
-/* =======================================================
-   Crewly — Meeting Orchestrator (meeting.js)
+﻿/* =======================================================
+   Syncora — Meeting Orchestrator (meeting.js)
    ======================================================= */
 
 (async function () {
@@ -81,7 +81,7 @@
   let layoutMode    = 'grid'; // 'grid' | 'spotlight'
 
   // Auth — chat is only available to signed-in users
-  const IS_SIGNED_IN = !!localStorage.getItem('crewly_user');
+  const IS_SIGNED_IN = !!localStorage.getItem('syncora_user');
 
   const AVATAR_COLORS = ['#7c3aed','#059669','#dc2626','#d97706','#0284c7','#db2777','#16a34a','#9333ea'];
   const peerTileMap   = new Map(); // peerId -> tile element
@@ -116,7 +116,7 @@
 
   /* ──────────────────── LOBBY SETUP ──────────────────── */
   roomCodeDisplay.textContent = ROOM_CODE;
-  displayNameInput.value = localStorage.getItem('crewly_name') || '';
+  displayNameInput.value = localStorage.getItem('syncora_name') || '';
 
   // Get local media
   try {
@@ -124,7 +124,7 @@
     lobbyPreview.srcObject = localStream;
     await lobbyPreview.play().catch(() => {});
   } catch (err) {
-    console.warn('[Crewly] getUserMedia failed:', err.name, err.message);
+    console.warn('[Syncora] getUserMedia failed:', err.name, err.message);
     // Show cam-denied message if permission was denied
     const deniedMsg = document.getElementById('camDeniedMsg');
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -175,7 +175,7 @@
   /* ──────────────────── JOIN ──────────────────── */
   joinNowBtn.addEventListener('click', async () => {
     displayName = (displayNameInput.value.trim() || 'Guest').substring(0, 24);
-    localStorage.setItem('crewly_name', displayName);
+    localStorage.setItem('syncora_name', displayName);
 
     // If no stream from getUserMedia, create a silent stream
     if (!localStream) {
@@ -194,7 +194,7 @@
     // Populate sidebar info
     sidebarRoomCode.textContent    = ROOM_CODE;
     sidebarRoomCodeCopy.textContent = ROOM_CODE;
-    topbarTitle.textContent        = `Crewly — ${ROOM_CODE}`;
+    topbarTitle.textContent        = `Syncora — ${ROOM_CODE}`;
     localNameEl.textContent        = displayName;
     localAvatar.textContent        = initials(displayName);
     localAvatar.style.background   = avatarColor(displayName);
@@ -242,7 +242,7 @@
     }, 1000);
 
     // Init RTC
-    rtc = new CrewlyRTC({
+    rtc = new SyncoraRTC({
       roomCode:   ROOM_CODE,
       displayName: displayName,
 

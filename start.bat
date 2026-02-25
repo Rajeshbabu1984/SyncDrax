@@ -1,6 +1,6 @@
-@echo off
+﻿@echo off
 echo ====================================
-echo  Crewly — Starting Backend Server
+echo  Syncora — Starting Backend Server
 echo ====================================
 echo.
 cd /d "%~dp0backend"

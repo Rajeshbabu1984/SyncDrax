@@ -1,5 +1,5 @@
-"""
-Crewly — Signaling Server + Auth API
+﻿"""
+Syncora — Signaling Server + Auth API
 Built with FastAPI + uvicorn + SQLModel
 
 Run:
@@ -37,18 +37,18 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────
-SECRET_KEY        = os.getenv("SECRET_KEY", "crewly-dev-secret-change-in-production")
+SECRET_KEY        = os.getenv("SECRET_KEY", "syncora-dev-secret-change-in-production")
 ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
-ADMIN_KEY         = os.getenv("ADMIN_KEY", "crewly-admin-2026")
+ADMIN_KEY         = os.getenv("ADMIN_KEY", "syncora-admin-2026")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./crewly.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./syncora.db")
 
 # ─────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
-log = logging.getLogger("crewly")
+log = logging.getLogger("syncora")
 
 MAX_PEERS_PER_ROOM = 30
 
@@ -142,7 +142,7 @@ class AuthResponse(BaseModel):
 # ─────────────────────────────────────────────────────────────
 # App
 # ─────────────────────────────────────────────────────────────
-app = FastAPI(title="Crewly Signaling Server", version="2.0.0")
+app = FastAPI(title="Syncora Signaling Server", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,

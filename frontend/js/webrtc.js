@@ -1,5 +1,5 @@
-/* =======================================================
-   Crewly — WebRTC Signaling & Peer Management
+﻿/* =======================================================
+   Syncora — WebRTC Signaling & Peer Management
    ======================================================= */
 
 const MAX_PARTICIPANTS = 30;
@@ -12,7 +12,7 @@ const ICE_SERVERS = {
   ],
 };
 
-class CrewlyRTC {
+class SyncoraRTC {
   constructor({ roomCode, displayName, onPeerJoined, onPeerLeft, onPeerStream, onMessage, onParticipantsUpdate }) {
     this.roomCode   = roomCode;
     this.localName  = displayName;
@@ -54,12 +54,12 @@ class CrewlyRTC {
       this.ws = new WebSocket(this.wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[CrewlyRTC] WebSocket connected');
+        console.log('[SyncoraRTC] WebSocket connected');
         resolve();
       };
 
       this.ws.onerror = (e) => {
-        console.error('[CrewlyRTC] WS error', e);
+        console.error('[SyncoraRTC] WS error', e);
         reject(e);
       };
 
@@ -68,12 +68,12 @@ class CrewlyRTC {
           const msg = JSON.parse(evt.data);
           this._handleMessage(msg);
         } catch (e) {
-          console.error('[CrewlyRTC] bad message', e);
+          console.error('[SyncoraRTC] bad message', e);
         }
       };
 
       this.ws.onclose = () => {
-        console.log('[CrewlyRTC] WS disconnected');
+        console.log('[SyncoraRTC] WS disconnected');
         // attempt reconnect after 3s
         setTimeout(() => {
           if (document.visibilityState !== 'hidden') this._reconnect();
@@ -84,9 +84,9 @@ class CrewlyRTC {
 
   _reconnect() {
     if (this._disconnecting) return;
-    console.log('[CrewlyRTC] Reconnecting…');
+    console.log('[SyncoraRTC] Reconnecting…');
     this.ws = new WebSocket(this.wsUrl);
-    this.ws.onopen    = () => console.log('[CrewlyRTC] Reconnected');
+    this.ws.onopen    = () => console.log('[SyncoraRTC] Reconnected');
     this.ws.onmessage = (evt) => {
       try { this._handleMessage(JSON.parse(evt.data)); } catch (e) {}
     };
@@ -304,4 +304,4 @@ class CrewlyRTC {
   }
 }
 
-window.CrewlyRTC = CrewlyRTC;
+window.SyncoraRTC = SyncoraRTC;

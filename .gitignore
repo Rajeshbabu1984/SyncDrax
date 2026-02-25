@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -17,8 +17,8 @@ env/
 .env
 backend/.env
 
-# Database (local SQLite — Render uses Postgres)
-backend/crewly.db
+# Database (local SQLite â€” Render uses Postgres)
+backend/syncora.db
 *.db
 *.sqlite3
 
