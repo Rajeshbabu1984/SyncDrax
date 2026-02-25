@@ -13,13 +13,6 @@ function getToken() { return localStorage.getItem('syncora_token') || ''; }
 const user  = getUser();
 const token = getToken();
 
-if (!user || !token) {
-  document.getElementById('authGate').classList.remove('hidden');
-} else {
-  document.getElementById('authGate').classList.add('hidden');
-  initChat();
-}
-
 // ── UI refs ───────────────────────────────────────────────────────────────────
 const channelListEl  = document.getElementById('channelList');
 const dmListEl       = document.getElementById('dmList');
@@ -552,3 +545,11 @@ function showToast(msg) {
 
 // Expose globally for inline onclick
 window.openReactionPicker = openReactionPicker;
+
+// ── Boot (must be last — all consts/lets must be initialized first) ───────────
+if (!user || !token) {
+  document.getElementById('authGate').classList.remove('hidden');
+} else {
+  document.getElementById('authGate').classList.add('hidden');
+  initChat();
+}
