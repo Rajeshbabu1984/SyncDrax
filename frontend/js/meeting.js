@@ -1,16 +1,16 @@
-﻿/* =======================================================
-   Syncora — Meeting Orchestrator (meeting.js)
+/* =======================================================
+   SyncDrax � Meeting Orchestrator (meeting.js)
    ======================================================= */
 
 (async function () {
-  /* ──────────────────── URL PARAMS ──────────────────── */
+  /* -------------------- URL PARAMS -------------------- */
   const params    = new URLSearchParams(location.search);
   const ROOM_CODE = (params.get('room') || '').toUpperCase();
   const IS_HOST   = params.get('host') === 'true';
 
   if (!ROOM_CODE) { location.href = 'index.html'; return; }
 
-  /* ──────────────────── DOM REFS ──────────────────── */
+  /* -------------------- DOM REFS -------------------- */
   const lobby           = document.getElementById('lobby');
   const meetingRoom     = document.getElementById('meetingRoom');
   const lobbyPreview    = document.getElementById('lobbyPreview');
@@ -67,7 +67,7 @@
   const confirmLeave    = document.getElementById('confirmLeave');
   const toggleLayout    = document.getElementById('toggleLayout');
 
-  /* ──────────────────── STATE ──────────────────── */
+  /* -------------------- STATE -------------------- */
   let localStream   = null;
   let micEnabled    = true;
   let camEnabled    = true;
@@ -80,13 +80,13 @@
   let timerInterval = null;
   let layoutMode    = 'grid'; // 'grid' | 'spotlight'
 
-  // Auth — chat is only available to signed-in users
-  const IS_SIGNED_IN = !!localStorage.getItem('syncora_user');
+  // Auth � chat is only available to signed-in users
+  const IS_SIGNED_IN = !!localStorage.getItem('syncdrax_user');
 
   const AVATAR_COLORS = ['#7c3aed','#059669','#dc2626','#d97706','#0284c7','#db2777','#16a34a','#9333ea'];
   const peerTileMap   = new Map(); // peerId -> tile element
 
-  /* ──────────────────── HELPERS ──────────────────── */
+  /* -------------------- HELPERS -------------------- */
   function avatarColor(name) {
     let h = 0;
     for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
@@ -114,10 +114,10 @@
     setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 1800);
   }
 
-  /* ──────────────────── LOBBY SETUP ──────────────────── */
+  /* -------------------- LOBBY SETUP -------------------- */
   roomCodeDisplay.textContent = ROOM_CODE;
-  const _storedUser = (() => { try { return JSON.parse(localStorage.getItem('syncora_user')); } catch { return null; } })();
-  displayNameInput.value = (_storedUser && _storedUser.name) || localStorage.getItem('syncora_name') || '';
+  const _storedUser = (() => { try { return JSON.parse(localStorage.getItem('syncdrax_user')); } catch { return null; } })();
+  displayNameInput.value = (_storedUser && _storedUser.name) || localStorage.getItem('syncdrax_name') || '';
 
   // Get local media
   try {
@@ -125,7 +125,7 @@
     lobbyPreview.srcObject = localStream;
     await lobbyPreview.play().catch(() => {});
   } catch (err) {
-    console.warn('[Syncora] getUserMedia failed:', err.name, err.message);
+    console.warn('[SyncDrax] getUserMedia failed:', err.name, err.message);
     // Show cam-denied message if permission was denied
     const deniedMsg = document.getElementById('camDeniedMsg');
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -173,10 +173,10 @@
 
   copyRoomBtn.addEventListener('click', () => copyToClipboard(ROOM_CODE));
 
-  /* ──────────────────── JOIN ──────────────────── */
+  /* -------------------- JOIN -------------------- */
   joinNowBtn.addEventListener('click', async () => {
     displayName = (displayNameInput.value.trim() || 'Guest').substring(0, 24);
-    localStorage.setItem('syncora_name', displayName);
+    localStorage.setItem('syncdrax_name', displayName);
 
     // If no stream from getUserMedia, create a silent stream
     if (!localStream) {
@@ -190,12 +190,12 @@
     enterMeeting();
   });
 
-  /* ──────────────────── ENTER MEETING ──────────────────── */
+  /* -------------------- ENTER MEETING -------------------- */
   function enterMeeting() {
     // Populate sidebar info
     sidebarRoomCode.textContent    = ROOM_CODE;
     sidebarRoomCodeCopy.textContent = ROOM_CODE;
-    topbarTitle.textContent        = `Syncora — ${ROOM_CODE}`;
+    topbarTitle.textContent        = `SyncDrax � ${ROOM_CODE}`;
     localNameEl.textContent        = displayName;
     localAvatar.textContent        = initials(displayName);
     localAvatar.style.background   = avatarColor(displayName);
@@ -243,7 +243,7 @@
     }, 1000);
 
     // Init RTC
-    rtc = new SyncoraRTC({
+    rtc = new SyncDraxRTC({
       roomCode:   ROOM_CODE,
       displayName: displayName,
 
@@ -282,14 +282,14 @@
     });
 
     rtc.connect(localStream).catch(() => {
-      chat.addSystemMessage('⚠️ Could not connect to server — using local mode');
+      chat.addSystemMessage('?? Could not connect to server � using local mode');
     });
 
     updateGridLayout();
     updateParticipantCount(1);
   }
 
-  /* ──────────────────── VIDEO TILES ──────────────────── */
+  /* -------------------- VIDEO TILES -------------------- */
   function createRemoteTile(peerId, stream, name) {
     const tile = document.createElement('div');
     tile.className = 'video-tile';
@@ -346,7 +346,7 @@
     participantCount.textContent = `${c} / 30`;
   }
 
-  /* ──────────────────── SIDEBAR PARTICIPANTS ──────────────────── */
+  /* -------------------- SIDEBAR PARTICIPANTS -------------------- */
   function addPeerToSidebar(peerId, name) {
     const li = document.createElement('li');
     li.className = 'participant-item';
@@ -386,7 +386,7 @@
     participantList.appendChild(li);
   })();
 
-  /* ──────────────────── TOOLBAR CONTROLS ──────────────────── */
+  /* -------------------- TOOLBAR CONTROLS -------------------- */
 
   // Mic
   toggleMicBtn.addEventListener('click', () => {
@@ -473,7 +473,7 @@
   // Chat
   function openChat() {
     if (!IS_SIGNED_IN) {
-      showToast('🔒 Sign in to use chat');
+      showToast('?? Sign in to use chat');
       return;
     }
     chatOpen = true;
@@ -532,7 +532,7 @@
       document.querySelector('.sidebar').style.display === 'none' ? '' : 'none';
   });
 
-  /* ──────────────────── SPEAKING DETECTION (VAD) ──────────────────── */
+  /* -------------------- SPEAKING DETECTION (VAD) -------------------- */
   (function setupVAD() {
     if (!localStream) return;
     try {
@@ -558,7 +558,7 @@
     }
   })();
 
-  /* ──────────────────── KEYBOARD SHORTCUTS ──────────────────── */
+  /* -------------------- KEYBOARD SHORTCUTS -------------------- */
   document.addEventListener('keydown', (e) => {
     // Ignore if typing in input/textarea
     if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;

@@ -1,23 +1,23 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Admin Panel — Syncora</title>
+  <title>Admin Panel � SyncDrax</title>
   <link rel="stylesheet" href="css/styles.css"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
   <script src="js/config.js"></script>
   <style>
-    /* ── Layout ── */
+    /* -- Layout -- */
     .admin-page {
       max-width: 960px;
       margin: 0 auto;
       padding: 60px 28px 100px;
     }
 
-    /* ── Gate screen ── */
+    /* -- Gate screen -- */
     #adminGate {
       display: flex;
       flex-direction: column;
@@ -68,7 +68,7 @@
       min-height: 18px;
     }
 
-    /* ── Panel header ── */
+    /* -- Panel header -- */
     #adminPanel { display: none; }
     .panel-header {
       display: flex;
@@ -117,7 +117,7 @@
       font-weight: 700;
     }
 
-    /* ── Search bar ── */
+    /* -- Search bar -- */
     .search-bar {
       position: relative;
       margin-bottom: 20px;
@@ -145,7 +145,7 @@
     }
     .search-bar input:focus { border-color: var(--purple); }
 
-    /* ── Table ── */
+    /* -- Table -- */
     .users-table-wrap {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
@@ -339,7 +339,7 @@
   <nav class="nav">
     <div class="nav-brand">
       <div class="nav-logo"><i class="fa-solid fa-bolt"></i></div>
-      <span class="nav-title">Syncora</span>
+      <span class="nav-title">SyncDrax</span>
     </div>
     <div class="nav-links">
       <a href="index.html" class="nav-link"><i class="fa-solid fa-arrow-left"></i> Back to Home</a>
@@ -348,19 +348,19 @@
 
   <div class="admin-page">
 
-    <!-- ── Gate: prompt for admin key ── -->
+    <!-- -- Gate: prompt for admin key -- -->
     <div id="adminGate">
       <div class="gate-icon"><i class="fa-solid fa-shield-halved"></i></div>
       <h2>Admin Access</h2>
       <p>Enter the admin key to access the control panel.</p>
       <div class="gate-form">
-        <input type="password" id="adminKeyInput" placeholder="Admin key…" autocomplete="off"/>
+        <input type="password" id="adminKeyInput" placeholder="Admin key�" autocomplete="off"/>
         <button class="btn btn-primary" id="gateSubmitBtn">Unlock</button>
       </div>
       <div id="gateError"></div>
     </div>
 
-    <!-- ── Main panel (hidden until authenticated) ── -->
+    <!-- -- Main panel (hidden until authenticated) -- -->
     <div id="adminPanel">
       <div class="panel-header">
         <div class="panel-title-group">
@@ -368,7 +368,7 @@
           <div class="panel-title">User Management</div>
         </div>
         <div class="panel-actions">
-          <div class="user-count-pill">Total users: <span id="userCount">—</span></div>
+          <div class="user-count-pill">Total users: <span id="userCount">�</span></div>
           <button class="btn btn-ghost" id="refreshBtn" style="padding:8px 16px;font-size:0.82rem">
             <i class="fa-solid fa-rotate-right"></i> Refresh
           </button>
@@ -380,7 +380,7 @@
 
       <div class="search-bar">
         <i class="fa-solid fa-magnifying-glass"></i>
-        <input type="text" id="searchInput" placeholder="Search by name or email…"/>
+        <input type="text" id="searchInput" placeholder="Search by name or email�"/>
       </div>
 
       <div class="users-table-wrap">
@@ -395,7 +395,7 @@
           </thead>
           <tbody id="usersTableBody">
             <tr><td colspan="4" class="table-state">
-              <i class="fa-solid fa-spinner fa-spin"></i>Loading users…
+              <i class="fa-solid fa-spinner fa-spin"></i>Loading users�
             </td></tr>
           </tbody>
         </table>
@@ -424,14 +424,14 @@
 
   <script>
     const API      = typeof API_BASE !== 'undefined' ? API_BASE : 'http://localhost:8000';
-    const GATE_KEY = 'syncora_admin_key';
+    const GATE_KEY = 'syncdrax_admin_key';
 
     let adminKey  = sessionStorage.getItem(GATE_KEY) || '';
     let allUsers  = [];
     let pendingDeleteId   = null;
     let pendingDeleteName = '';
 
-    /* ── Toast ── */
+    /* -- Toast -- */
     function toast(msg, type = '') {
       const el = document.getElementById('adminToast');
       el.textContent = msg;
@@ -440,7 +440,7 @@
       el._t = setTimeout(() => el.classList.remove('show'), 3000);
     }
 
-    /* ── Gate ── */
+    /* -- Gate -- */
     function showPanel() {
       document.getElementById('adminGate').style.display  = 'none';
       document.getElementById('adminPanel').style.display = 'block';
@@ -452,7 +452,7 @@
       if (!key) return;
       const errEl = document.getElementById('gateError');
       const btn   = document.getElementById('gateSubmitBtn');
-      btn.disabled = true; btn.textContent = 'Checking…';
+      btn.disabled = true; btn.textContent = 'Checking�';
       errEl.textContent = '';
       try {
         const res = await fetch(`${API}/admin/users`, {
@@ -483,11 +483,11 @@
       document.getElementById('adminKeyInput').value = '';
     });
 
-    /* ── Load users ── */
+    /* -- Load users -- */
     async function loadUsers() {
       const tbody = document.getElementById('usersTableBody');
       tbody.innerHTML = `<tr><td colspan="4" class="table-state">
-        <i class="fa-solid fa-spinner fa-spin"></i>Loading…</td></tr>`;
+        <i class="fa-solid fa-spinner fa-spin"></i>Loading�</td></tr>`;
       try {
         const res = await fetch(`${API}/admin/users`, {
           headers: { 'x-admin-key': adminKey }
@@ -555,7 +555,7 @@
       });
     }
 
-    /* ── Search ── */
+    /* -- Search -- */
     document.getElementById('searchInput').addEventListener('input', e => {
       const q = e.target.value.toLowerCase();
       const filtered = allUsers.filter(u =>
@@ -565,10 +565,10 @@
       renderTable(filtered);
     });
 
-    /* ── Refresh ── */
+    /* -- Refresh -- */
     document.getElementById('refreshBtn').addEventListener('click', loadUsers);
 
-    /* ── Confirm dialog ── */
+    /* -- Confirm dialog -- */
     document.getElementById('confirmCancelBtn').addEventListener('click', () => {
       document.getElementById('confirmOverlay').classList.remove('show');
       pendingDeleteId = null;
@@ -583,7 +583,7 @@
     document.getElementById('confirmOkBtn').addEventListener('click', async () => {
       if (!pendingDeleteId) return;
       const okBtn = document.getElementById('confirmOkBtn');
-      okBtn.disabled = true; okBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting…';
+      okBtn.disabled = true; okBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting�';
       try {
         const res = await fetch(`${API}/admin/users/${pendingDeleteId}`, {
           method: 'DELETE',
@@ -599,7 +599,7 @@
         }
         allUsers = allUsers.filter(u => u.id !== pendingDeleteId);
         document.getElementById('userCount').textContent = allUsers.length;
-        toast(`✓ ${pendingDeleteName} has been permanently removed.`, 'success');
+        toast(`? ${pendingDeleteName} has been permanently removed.`, 'success');
       } catch {
         toast('Failed to terminate user. Try again.', 'error');
       } finally {
@@ -610,7 +610,7 @@
       }
     });
 
-    /* ── Helpers ── */
+    /* -- Helpers -- */
     function escHtml(s) {
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
@@ -618,7 +618,7 @@
       return s.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    /* ── Auto-login if session key exists ── */
+    /* -- Auto-login if session key exists -- */
     if (adminKey) showPanel();
   </script>
 </body>

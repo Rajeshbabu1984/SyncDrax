@@ -1,6 +1,6 @@
-﻿/* =======================================================
-   Syncora — Virtual Backgrounds (MediaPipe Selfie Segmentation)
-   Real person segmentation — works like Zoom / Google Meet
+/* =======================================================
+   SyncDrax � Virtual Backgrounds (MediaPipe Selfie Segmentation)
+   Real person segmentation � works like Zoom / Google Meet
    ======================================================= */
 
 const BACKGROUNDS = {
@@ -17,18 +17,18 @@ const BACKGROUNDS = {
   bg9:  { type: 'image', src: 'images/bg-home.jpg' },
 };
 
-// ─── Home Interior Scene Renderer ────────────────────────────────────────────
+// --- Home Interior Scene Renderer --------------------------------------------
 function _drawHomeScene(ctx, w, h) {
   const s = w / 640; // scale factor
 
-  // ── Wall ──
+  // -- Wall --
   const wallGrad = ctx.createLinearGradient(0, 0, 0, h * 0.72);
   wallGrad.addColorStop(0, '#f0e6d3');
   wallGrad.addColorStop(1, '#e8d5bc');
   ctx.fillStyle = wallGrad;
   ctx.fillRect(0, 0, w, h * 0.72);
 
-  // ── Floor ──
+  // -- Floor --
   const floorGrad = ctx.createLinearGradient(0, h * 0.72, 0, h);
   floorGrad.addColorStop(0, '#a0724a');
   floorGrad.addColorStop(1, '#7a4f2e');
@@ -53,7 +53,7 @@ function _drawHomeScene(ctx, w, h) {
   ctx.fillStyle = '#d4b896';
   ctx.fillRect(0, h * 0.72, w, 8 * s);
 
-  // ── Window (back left) ──
+  // -- Window (back left) --
   const wx = w * 0.06, wy = h * 0.07, ww = w * 0.26, wh = h * 0.48;
   // Sky outside
   const skyGrad = ctx.createLinearGradient(wx, wy, wx, wy + wh);
@@ -90,7 +90,7 @@ function _drawHomeScene(ctx, w, h) {
   ctx.globalAlpha = 1;
   ctx.restore();
 
-  // ── Bookshelf (right side) ──
+  // -- Bookshelf (right side) --
   const bx = w * 0.73, by = h * 0.08, bw = w * 0.24, bh = h * 0.64;
   // Cabinet body
   ctx.fillStyle = '#8b5e3c';
@@ -124,7 +124,7 @@ function _drawHomeScene(ctx, w, h) {
   ctx.fillRect(bx, by, 5 * s, bh);
   ctx.fillRect(bx + bw - 5 * s, by, 5 * s, bh);
 
-  // ── Plant (potted, near window) ──
+  // -- Plant (potted, near window) --
   const px = w * 0.36, potY = h * 0.60;
   // Pot
   ctx.fillStyle = '#c0633a';
@@ -165,11 +165,11 @@ function _drawHomeScene(ctx, w, h) {
     ctx.fill();
   });
 
-  // ── Ceiling line / crown molding ──
+  // -- Ceiling line / crown molding --
   ctx.fillStyle = '#d4b896';
   ctx.fillRect(0, 0, w, 6 * s);
 
-  // ── Subtle shadow at base of wall ──
+  // -- Subtle shadow at base of wall --
   const shadowGrad = ctx.createLinearGradient(0, h * 0.68, 0, h * 0.75);
   shadowGrad.addColorStop(0, 'rgba(0,0,0,0)');
   shadowGrad.addColorStop(1, 'rgba(0,0,0,0.18)');
@@ -207,7 +207,7 @@ class BackgroundEngine {
       if (bg && bg.type === 'image') {
         const img = new Image();
         img.onload  = () => console.log(`[BG] Image loaded: ${bg.src}`);
-        img.onerror = () => console.error(`[BG] Image FAILED to load: ${bg.src} — make sure the file exists at frontend/images/`);
+        img.onerror = () => console.error(`[BG] Image FAILED to load: ${bg.src} � make sure the file exists at frontend/images/`);
         // resolve relative to the page (not the JS file)
         img.src = new URL(bg.src, window.location.href).href;
         this._imgCache[key] = img;
@@ -217,7 +217,7 @@ class BackgroundEngine {
     this._initSegmenter();
   }
 
-  // ─── MediaPipe init ───────────────────────────────────────
+  // --- MediaPipe init ---------------------------------------
   _initSegmenter() {
     if (typeof SelfieSegmentation === 'undefined') {
       console.warn('[BackgroundEngine] MediaPipe SelfieSegmentation not loaded.');
@@ -243,7 +243,7 @@ class BackgroundEngine {
     else this.video.addEventListener('loadeddata', warmUp, { once: true });
   }
 
-  // ─── Called by MediaPipe for every frame ─────────────────
+  // --- Called by MediaPipe for every frame -----------------
   _onResults(results) {
     if (!this.running || this.current === 'none') return;
 
@@ -256,7 +256,7 @@ class BackgroundEngine {
     const bg = BACKGROUNDS[this.current];
     if (!bg) return;
 
-    // ── Step 1: draw the background ──────────────────────────
+    // -- Step 1: draw the background --------------------------
     if (bg.type === 'blur') {
       // Blur the real camera frame to use as background
       ctx.filter = 'blur(20px) brightness(0.6)';
@@ -288,22 +288,22 @@ class BackgroundEngine {
         else          { sh = img.naturalWidth  / cr; sy = (img.naturalHeight - sh) / 2; }
         ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
       } else {
-        // Image not ready yet — draw a placeholder and wait
+        // Image not ready yet � draw a placeholder and wait
         ctx.fillStyle = '#1a2a1a';
         ctx.fillRect(0, 0, w, h);
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         ctx.font = `${14 * (w/640)}px sans-serif`;
         ctx.textAlign = 'center';
-        ctx.fillText('Loading background…', w / 2, h / 2);
+        ctx.fillText('Loading background�', w / 2, h / 2);
         ctx.textAlign = 'left';
         // If image failed entirely, log it
         if (img && img.complete && !img.naturalWidth) {
-          console.error('[BG] Image load failed — check file is at frontend/images/bg-home.jpg');
+          console.error('[BG] Image load failed � check file is at frontend/images/bg-home.jpg');
         }
       }
     }
 
-    // ── Step 2: isolate the person using the segmentation mask ─
+    // -- Step 2: isolate the person using the segmentation mask -
     // segmentationMask is a canvas where person = bright, background = dark.
     // We draw the video frame onto a temp canvas, then use destination-in
     // with the mask so only the person's pixels remain.
@@ -329,11 +329,11 @@ class BackgroundEngine {
     pctx.drawImage(mc, 0, 0, w, h);                          // cut out using sharpened mask
     pctx.globalCompositeOperation = 'source-over';
 
-    // ── Step 3: composite person on top of background ─────────
+    // -- Step 3: composite person on top of background ---------
     ctx.drawImage(pc, 0, 0, w, h);
   }
 
-  // ─── Animation loop ───────────────────────────────────────
+  // --- Animation loop ---------------------------------------
   async _runLoop() {
     if (!this.running) return;
 
@@ -371,7 +371,7 @@ class BackgroundEngine {
     ctx.filter = 'none';
   }
 
-  // ─── Public API ───────────────────────────────────────────
+  // --- Public API -------------------------------------------
 
   /**
    * Set the active background.
@@ -417,7 +417,7 @@ class BackgroundEngine {
     return this.getCanvasStream().getVideoTracks()[0] || null;
   }
 
-  // ─── Download wallpaper ───────────────────────────────────
+  // --- Download wallpaper -----------------------------------
   downloadBackground(bgKey, name) {
     const bg = BACKGROUNDS[bgKey];
     if (!bg) return;
@@ -448,14 +448,14 @@ class BackgroundEngine {
     c.globalAlpha = 0.12;
     c.font        = 'bold 36px Lato, sans-serif';
     c.fillStyle   = '#fff';
-    c.fillText('⚡ Syncora', 40, 1050);
+    c.fillText('? SyncDrax', 40, 1050);
     c.globalAlpha = 1;
 
     tmp.toBlob(blob => {
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
-      a.download = `syncora-wallpaper-${name || bgKey}.png`;
+      a.download = `syncdrax-wallpaper-${name || bgKey}.png`;
       a.click();
       URL.revokeObjectURL(url);
     }, 'image/png');

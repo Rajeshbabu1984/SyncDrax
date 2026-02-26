@@ -1,5 +1,5 @@
-ï»¿/* =======================================================
-   Syncora â€” WebRTC Signaling & Peer Management
+/* =======================================================
+   SyncDrax — WebRTC Signaling & Peer Management
    ======================================================= */
 
 const MAX_PARTICIPANTS = 30;
@@ -12,7 +12,7 @@ const ICE_SERVERS = {
   ],
 };
 
-class SyncoraRTC {
+class SyncDraxRTC {
   constructor({ roomCode, displayName, onPeerJoined, onPeerLeft, onPeerStream, onMessage, onParticipantsUpdate }) {
     this.roomCode   = roomCode;
     this.localName  = displayName;
@@ -54,12 +54,12 @@ class SyncoraRTC {
       this.ws = new WebSocket(this.wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[SyncoraRTC] WebSocket connected');
+        console.log('[SyncDraxRTC] WebSocket connected');
         resolve();
       };
 
       this.ws.onerror = (e) => {
-        console.error('[SyncoraRTC] WS error', e);
+        console.error('[SyncDraxRTC] WS error', e);
         reject(e);
       };
 
@@ -68,12 +68,12 @@ class SyncoraRTC {
           const msg = JSON.parse(evt.data);
           this._handleMessage(msg);
         } catch (e) {
-          console.error('[SyncoraRTC] bad message', e);
+          console.error('[SyncDraxRTC] bad message', e);
         }
       };
 
       this.ws.onclose = () => {
-        console.log('[SyncoraRTC] WS disconnected');
+        console.log('[SyncDraxRTC] WS disconnected');
         // attempt reconnect after 3s
         setTimeout(() => {
           if (document.visibilityState !== 'hidden') this._reconnect();
@@ -84,9 +84,9 @@ class SyncoraRTC {
 
   _reconnect() {
     if (this._disconnecting) return;
-    console.log('[SyncoraRTC] Reconnectingâ€¦');
+    console.log('[SyncDraxRTC] Reconnecting…');
     this.ws = new WebSocket(this.wsUrl);
-    this.ws.onopen    = () => console.log('[SyncoraRTC] Reconnected');
+    this.ws.onopen    = () => console.log('[SyncDraxRTC] Reconnected');
     this.ws.onmessage = (evt) => {
       try { this._handleMessage(JSON.parse(evt.data)); } catch (e) {}
     };
@@ -115,7 +115,7 @@ class SyncoraRTC {
       }
 
       case 'peer_joined': {
-        // New peer â€” they'll send us an offer
+        // New peer — they'll send us an offer
         this.onPeerJoined(msg.peer_id, msg.name);
         this._updateParticipantList(msg.peer_id, msg.name, 'join');
         break;
@@ -304,4 +304,4 @@ class SyncoraRTC {
   }
 }
 
-window.SyncoraRTC = SyncoraRTC;
+window.SyncDraxRTC = SyncDraxRTC;

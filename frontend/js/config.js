@@ -1,5 +1,5 @@
-﻿/* =======================================================
-   Syncora — Runtime Config
+/* =======================================================
+   SyncDrax � Runtime Config
    Auto-detects dev (localhost) vs production (Render)
    ======================================================= */
 
@@ -9,9 +9,9 @@ const _IS_LOCAL =
 /** REST API base URL */
 const API_BASE = _IS_LOCAL
   ? 'http://localhost:8000'
-  : 'https://syncora-backend.onrender.com';
+  : 'https://syncdrax-backend.onrender.com';
 
 /** WebSocket base URL */
 const WS_BASE = _IS_LOCAL
   ? 'ws://localhost:8000'
-  : 'wss://syncora-backend.onrender.com';
+  : 'wss://syncdrax-backend.onrender.com';

@@ -1,5 +1,5 @@
-﻿"""
-Syncora — Signaling Server + Auth API
+"""
+SyncDrax � Signaling Server + Auth API
 Built with FastAPI + uvicorn + SQLModel
 
 Run:
@@ -7,12 +7,12 @@ Run:
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 Endpoints:
-    WS   /ws/{room_code}/{peer_id}/{display_name}   — WebRTC signaling
-    POST /auth/signup                               — Create account
-    POST /auth/signin                               — Sign in, get JWT
-    GET  /auth/me                                   — Get current user
-    GET  /health                                    — Health check
-    GET  /rooms                                     — Active room stats
+    WS   /ws/{room_code}/{peer_id}/{display_name}   � WebRTC signaling
+    POST /auth/signup                               � Create account
+    POST /auth/signin                               � Sign in, get JWT
+    GET  /auth/me                                   � Get current user
+    GET  /health                                    � Health check
+    GET  /rooms                                     � Active room stats
 """
 
 import json
@@ -36,29 +36,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Config
-# ─────────────────────────────────────────────────────────────
-SECRET_KEY        = os.getenv("SECRET_KEY", "syncora-dev-secret-change-in-production")
+# -------------------------------------------------------------
+SECRET_KEY        = os.getenv("SECRET_KEY", "syncdrax-dev-secret-change-in-production")
 ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
-ADMIN_KEY         = os.getenv("ADMIN_KEY", "syncora-admin-2026")
+ADMIN_KEY         = os.getenv("ADMIN_KEY", "syncdrax-admin-2026")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./syncora.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./syncdrax.db")
 UPLOADS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Logging
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
-log = logging.getLogger("syncora")
+log = logging.getLogger("syncdrax")
 
 MAX_PEERS_PER_ROOM = 30
 
-# ─────────────────────────────────────────────────────────────
-# Database — SQLModel + SQLite
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Database � SQLModel + SQLite
+# -------------------------------------------------------------
 # SQLite needs check_same_thread=False; Postgres does not take that arg
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, echo=False, connect_args=_connect_args)
@@ -74,7 +74,7 @@ class User(SQLModel, table=True):
 
 class Channel(SQLModel, table=True):
     id:          Optional[int] = Field(default=None, primary_key=True)
-    name:        str           = Field(index=True)   # e.g. "🔥 general"
+    name:        str           = Field(index=True)   # e.g. "?? general"
     description: Optional[str] = None
     created_by:  int           = Field(default=0)
     created_at:  datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -82,14 +82,14 @@ class Channel(SQLModel, table=True):
 
 class ChatMessage(SQLModel, table=True):
     id:            Optional[int] = Field(default=None, primary_key=True)
-    channel_id:    Optional[int] = Field(default=None)   # null → DM
+    channel_id:    Optional[int] = Field(default=None)   # null ? DM
     dm_to_user_id: Optional[int] = Field(default=None)
     sender_id:     int
     sender_name:   str
     content:       str           = Field(default="")
     file_url:      Optional[str] = None
     file_name:     Optional[str] = None
-    reactions:     str           = Field(default="{}")   # JSON {"👍": [uid,...]}
+    reactions:     str           = Field(default="{}")   # JSON {"??": [uid,...]}
     created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -102,9 +102,9 @@ def get_session():
         yield session
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Password hashing
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 def hash_password(plain: str) -> str:
     return _bcrypt.hashpw(plain.encode(), _bcrypt.gensalt()).decode()
 
@@ -113,9 +113,9 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # JWT
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -145,9 +145,9 @@ def get_current_user(
     return user
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Pydantic request / response schemas
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 class SignUpRequest(BaseModel):
     name:     str
     email:    str
@@ -164,10 +164,10 @@ class AuthResponse(BaseModel):
     user:  dict
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # App
-# ─────────────────────────────────────────────────────────────
-app = FastAPI(title="Syncora Signaling Server", version="2.0.0")
+# -------------------------------------------------------------
+app = FastAPI(title="SyncDrax Signaling Server", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -190,19 +190,19 @@ def on_startup():
     with Session(engine) as session:
         if not session.exec(select(Channel)).first():
             for cname, cdesc in [
-                ("💬 general",  "Company-wide announcements and general chat"),
-                ("🎉 random",   "Non-work banter and fun"),
-                ("🛠️ dev",      "Engineering discussions"),
-                ("📢 updates",  "Product and release updates"),
+                ("?? general",  "Company-wide announcements and general chat"),
+                ("?? random",   "Non-work banter and fun"),
+                ("??? dev",      "Engineering discussions"),
+                ("?? updates",  "Product and release updates"),
             ]:
                 session.add(Channel(name=cname, description=cdesc, created_by=0))
             session.commit()
             log.info("Default channels seeded")
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Auth endpoints
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 @app.post("/auth/signup", response_model=AuthResponse)
 def signup(req: SignUpRequest, session: Session = Depends(get_session)):
     req.name  = req.name.strip()
@@ -244,9 +244,9 @@ def me(current_user: User = Depends(get_current_user)):
     return {"id": current_user.id, "name": current_user.name, "email": current_user.email}
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Admin endpoints
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 from fastapi import Header
 
 
@@ -282,9 +282,9 @@ def admin_delete_user(
     return {"ok": True, "deleted": user_id}
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Utility endpoints
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 # In-memory room registry  { room_code: { peer_id: { ws, name } } }
 rooms: Dict[str, Dict[str, dict]] = {}
@@ -309,7 +309,7 @@ async def broadcast_to_room(room_code: str, payload: dict, exclude: str | None =
         await safe_send(info["ws"], payload)
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 @app.get("/health")
 async def health():
     return {"status": "ok", "rooms": len(rooms)}
@@ -323,25 +323,25 @@ async def room_stats():
     }
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 @app.websocket("/ws/{room_code}/{peer_id}/{display_name}")
 async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name: str):
     await ws.accept()
     room_code = room_code.upper()
 
-    # ── Enforce participant limit ──
+    # -- Enforce participant limit --
     room_peers = rooms.get(room_code, {})
     if len(room_peers) >= MAX_PEERS_PER_ROOM:
         await safe_send(ws, {"type": "room_full"})
         await ws.close()
         return
 
-    # ── Register peer ──
+    # -- Register peer --
     rooms.setdefault(room_code, {})
     rooms[room_code][peer_id] = {"ws": ws, "name": display_name}
     log.info("[%s] %s joined as '%s'  (total: %d)", room_code, peer_id, display_name, len(rooms[room_code]))
 
-    # ── Send existing peers to new joiner ──
+    # -- Send existing peers to new joiner --
     existing = [
         {"id": pid, "name": info["name"]}
         for pid, info in rooms[room_code].items()
@@ -349,28 +349,28 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
     ]
     await safe_send(ws, {"type": "room_state", "peers": existing})
 
-    # ── Notify existing peers of new joiner ──
+    # -- Notify existing peers of new joiner --
     await broadcast_to_room(room_code, {
         "type":    "peer_joined",
         "peer_id": peer_id,
         "name":    display_name,
     }, exclude=peer_id)
 
-    # ── Message loop ──
+    # -- Message loop --
     try:
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
             msg_type = msg.get("type", "")
 
-            # ── WebRTC Signaling relay ──
+            # -- WebRTC Signaling relay --
             if msg_type in ("offer", "answer", "ice"):
                 to_id = msg.get("to_id")
                 if to_id and to_id in rooms.get(room_code, {}):
                     relay = {**msg, "from_id": peer_id}
                     await safe_send(rooms[room_code][to_id]["ws"], relay)
 
-            # ── Chat relay ──
+            # -- Chat relay --
             elif msg_type == "chat":
                 await broadcast_to_room(room_code, {
                     "type":      "chat",
@@ -388,7 +388,7 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
             log.warning("[%s] %s error: %s", room_code, peer_id, exc)
 
     finally:
-        # ── Clean up ──
+        # -- Clean up --
         if room_code in rooms and peer_id in rooms[room_code]:
             del rooms[room_code][peer_id]
             log.info("[%s] %s left  (total: %d)", room_code, peer_id, len(rooms.get(room_code, {})))
@@ -405,9 +405,9 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
             log.info("[%s] Room deleted (empty)", room_code)
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Chat helpers
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 def _msg_dict(m: ChatMessage) -> dict:
     return {
         "id":            m.id,
@@ -436,17 +436,17 @@ async def _chat_send(user_id: int, payload: dict):
         await safe_send(ws, payload)
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Chat Pydantic schemas
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 class ChannelCreate(BaseModel):
     name:        str
     description: Optional[str] = None
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Chat REST endpoints
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 @app.get("/chat/channels")
 def list_channels(
     current_user: User = Depends(get_current_user),
@@ -539,9 +539,9 @@ async def upload_file(
     return {"url": f"/uploads/{fname}", "name": original}
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Chat WebSocket
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 @app.websocket("/ws/chat/{user_id}")
 async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
     # Authenticate via token query param
@@ -570,7 +570,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
             msg   = json.loads(raw)
             mtype = msg.get("type")
 
-            # ── Channel message ──
+            # -- Channel message --
             if mtype == "channel_message":
                 channel_id = msg.get("channel_id")
                 content    = (msg.get("content") or "").strip()
@@ -586,7 +586,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     session.add(cm); session.commit(); session.refresh(cm)
                 await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
 
-            # ── Direct message ──
+            # -- Direct message --
             elif mtype == "dm":
                 to_uid    = msg.get("to_user_id")
                 content   = (msg.get("content") or "").strip()
@@ -605,7 +605,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                 await _chat_send(to_uid, dm_payload)
                 await _chat_send(user_id, dm_payload)
 
-            # ── Typing indicator ──
+            # -- Typing indicator --
             elif mtype == "typing":
                 channel_id = msg.get("channel_id")
                 to_uid     = msg.get("to_user_id")
@@ -617,7 +617,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     tpl["to_user_id"] = to_uid
                     await _chat_send(to_uid, tpl)
 
-            # ── Emoji reaction ──
+            # -- Emoji reaction --
             elif mtype == "react":
                 msg_id = msg.get("message_id")
                 emoji  = msg.get("emoji", "")

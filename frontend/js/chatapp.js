@@ -1,5 +1,5 @@
 /**
- * Syncora — Chat App (chatapp.js)
+ * SyncDrax — Chat App (chatapp.js)
  */
 'use strict';
 
@@ -7,8 +7,8 @@ const API = typeof API_BASE !== 'undefined' ? API_BASE : 'http://localhost:8000'
 const WSS = typeof WS_BASE  !== 'undefined' ? WS_BASE  : 'ws://localhost:8000';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-function getUser()  { try { return JSON.parse(localStorage.getItem('syncora_user')); } catch { return null; } }
-function getToken() { return localStorage.getItem('syncora_token') || ''; }
+function getUser()  { try { return JSON.parse(localStorage.getItem('syncdrax_user')); } catch { return null; } }
+function getToken() { return localStorage.getItem('syncdrax_token') || ''; }
 
 const user  = getUser();
 const token = getToken();

@@ -1,9 +1,9 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Syncora — Collaborate Without Limits</title>
+  <title>SyncDrax � Collaborate Without Limits</title>
   <link rel="stylesheet" href="css/styles.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,7 +19,7 @@
       <div class="nav-logo">
         <i class="fa-solid fa-bolt"></i>
       </div>
-      <span class="nav-title">Syncora</span>
+      <span class="nav-title">SyncDrax</span>
     </div>
     <div class="nav-links">
       <a href="#features" class="nav-link">Features</a>
@@ -35,14 +35,14 @@
     <div class="hero-content">
       <p class="hero-eyebrow"><i class="fa-solid fa-circle-dot pulse"></i> No account needed to start a call</p>
       <h1 class="hero-title">Where your team<br/><span class="gradient-text">actually connects.</span></h1>
-      <p class="hero-sub">High-quality video meetings, real-time chat, and stunning virtual backgrounds — all in one place. Jump in instantly, no sign-up required.</p>
+      <p class="hero-sub">High-quality video meetings, real-time chat, and stunning virtual backgrounds � all in one place. Jump in instantly, no sign-up required.</p>
 
       <div class="hero-actions">
         <button class="btn btn-primary btn-lg" id="newMeetingBtn">
           <i class="fa-solid fa-video"></i> New Meeting
         </button>
         <div class="join-box">
-          <input type="text" id="meetingCodeInput" class="join-input" placeholder="Enter meeting code…" maxlength="12" />
+          <input type="text" id="meetingCodeInput" class="join-input" placeholder="Enter meeting code�" maxlength="12" />
           <button class="btn btn-secondary btn-lg" id="joinMeetingBtn">
             <i class="fa-solid fa-arrow-right-to-bracket"></i> Join
           </button>
@@ -58,7 +58,7 @@
           <span class="preview-dot red"></span>
           <span class="preview-dot yellow"></span>
           <span class="preview-dot green"></span>
-          <span class="preview-title">Syncora Meeting</span>
+          <span class="preview-title">SyncDrax Meeting</span>
         </div>
         <div class="preview-grid">
           <div class="preview-tile active">
@@ -79,9 +79,9 @@
           </div>
         </div>
         <div class="preview-chat">
-          <div class="preview-msg"><span style="color:#7C3AED">Alex</span> Hey team 👋</div>
+          <div class="preview-msg"><span style="color:#7C3AED">Alex</span> Hey team ??</div>
           <div class="preview-msg"><span style="color:#059669">Blake</span> Ready to start!</div>
-          <div class="preview-msg"><span style="color:#DC2626">Casey</span> Let's go 🚀</div>
+          <div class="preview-msg"><span style="color:#DC2626">Casey</span> Let's go ??</div>
         </div>
       </div>
     </div>
@@ -94,7 +94,7 @@
       <div class="feature-card">
         <div class="feature-icon"><i class="fa-solid fa-bolt-lightning"></i></div>
         <h3>Instant Meetings</h3>
-        <p>No account required. Generate a code and share — your team joins in seconds.</p>
+        <p>No account required. Generate a code and share � your team joins in seconds.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon"><i class="fa-solid fa-comments"></i></div>
@@ -127,16 +127,16 @@
   <!-- FOOTER -->
   <footer class="footer">
     <div class="footer-brand">
-      <i class="fa-solid fa-bolt"></i> Syncora
+      <i class="fa-solid fa-bolt"></i> SyncDrax
     </div>
     <div class="footer-links">
       <a href="tos.html" class="footer-link">Terms of Service</a>
-      <span style="color:var(--border)">·</span>
+      <span style="color:var(--border)">�</span>
       <a href="chat.html" class="footer-link"><i class="fa-solid fa-comments" style="font-size:0.75em"></i> Team Chat</a>
-      <span style="color:var(--border)">·</span>
+      <span style="color:var(--border)">�</span>
       <a href="admin.html" class="footer-link"><i class="fa-solid fa-shield-halved" style="font-size:0.75em"></i> Admin Panel</a>
     </div>
-    <p class="footer-copy">© 2026 Syncora. Built for teams that move fast.</p>
+    <p class="footer-copy">� 2026 SyncDrax. Built for teams that move fast.</p>
   </footer>
 
   <!-- AUTH MODAL -->
@@ -176,15 +176,15 @@
       return Math.random().toString(36).substring(2, 10).toUpperCase();
     }
 
-    /* ── Auth helpers ── */
-    function getUser()  { try { return JSON.parse(localStorage.getItem('syncora_user')); } catch { return null; } }
+    /* -- Auth helpers -- */
+    function getUser()  { try { return JSON.parse(localStorage.getItem('syncdrax_user')); } catch { return null; } }
     function saveUser(u, token) {
-      localStorage.setItem('syncora_user', JSON.stringify(u));
-      if (token) localStorage.setItem('syncora_token', token);
+      localStorage.setItem('syncdrax_user', JSON.stringify(u));
+      if (token) localStorage.setItem('syncdrax_token', token);
     }
     function signOut()  {
-      localStorage.removeItem('syncora_user');
-      localStorage.removeItem('syncora_token');
+      localStorage.removeItem('syncdrax_user');
+      localStorage.removeItem('syncdrax_token');
       updateNav();
     }
 
@@ -218,7 +218,7 @@
     // Run on load
     updateNav();
 
-    /* ── Navigation ── */
+    /* -- Navigation -- */
     document.getElementById('newMeetingBtn').addEventListener('click', () => {
       const code = generateCode();
       window.location.href = `meeting.html?room=${code}&host=true`;
@@ -234,7 +234,7 @@
       if (e.key === 'Enter') document.getElementById('joinMeetingBtn').click();
     });
 
-    /* ── Auth modal open ── */
+    /* -- Auth modal open -- */
     document.getElementById('signInBtn').addEventListener('click', () => {
       document.getElementById('authModal').classList.remove('hidden');
     });
@@ -263,14 +263,14 @@
       });
     });
 
-    /* ── Sign In ── */
+    /* -- Sign In -- */
     document.getElementById('doSignInBtn').addEventListener('click', async () => {
       const email = document.getElementById('signinEmail').value.trim();
       const pass  = document.getElementById('signinPassword').value;
       if (!email || !pass) return alert('Please enter your email and password.');
 
       const btn = document.getElementById('doSignInBtn');
-      btn.disabled = true; btn.textContent = 'Signing in…';
+      btn.disabled = true; btn.textContent = 'Signing in�';
       try {
         const res  = await fetch(`${API}/auth/signin`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -288,7 +288,7 @@
       }
     });
 
-    /* ── Sign Up ── */
+    /* -- Sign Up -- */
     document.getElementById('doSignUpBtn').addEventListener('click', async () => {
       const name  = document.getElementById('signupName').value.trim();
       const email = document.getElementById('signupEmail').value.trim();
@@ -297,7 +297,7 @@
       if (pass.length < 6) return alert('Password must be at least 6 characters.');
 
       const btn = document.getElementById('doSignUpBtn');
-      btn.disabled = true; btn.textContent = 'Creating account…';
+      btn.disabled = true; btn.textContent = 'Creating account�';
       try {
         const res  = await fetch(`${API}/auth/signup`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -315,7 +315,7 @@
       }
     });
 
-    /* ── Guest ── */
+    /* -- Guest -- */
     document.getElementById('continueGuestBtn').addEventListener('click', () => {
       const code = generateCode();
       window.location.href = `meeting.html?guest=true&room=${code}`;
