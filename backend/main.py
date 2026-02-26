@@ -1,5 +1,5 @@
 """
-SyncDrax — Signaling Server + Auth API
+SyncDrax ï¿½ Signaling Server + Auth API
 Built with FastAPI + uvicorn + SQLModel
 
 Run:
@@ -7,12 +7,12 @@ Run:
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 Endpoints:
-    WS   /ws/{room_code}/{peer_id}/{display_name}   — WebRTC signaling
-    POST /auth/signup                               — Create account
-    POST /auth/signin                               — Sign in, get JWT
-    GET  /auth/me                                   — Get current user
-    GET  /health                                    — Health check
-    GET  /rooms                                     — Active room stats
+    WS   /ws/{room_code}/{peer_id}/{display_name}   ï¿½ WebRTC signaling
+    POST /auth/signup                               ï¿½ Create account
+    POST /auth/signin                               ï¿½ Sign in, get JWT
+    GET  /auth/me                                   ï¿½ Get current user
+    GET  /health                                    ï¿½ Health check
+    GET  /rooms                                     ï¿½ Active room stats
 """
 
 import json
@@ -57,7 +57,7 @@ log = logging.getLogger("syncdrax")
 MAX_PEERS_PER_ROOM = 30
 
 # -------------------------------------------------------------
-# Database — SQLModel + SQLite
+# Database ï¿½ SQLModel + SQLite
 # -------------------------------------------------------------
 # SQLite needs check_same_thread=False; Postgres does not take that arg
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -82,19 +82,47 @@ class Channel(SQLModel, table=True):
 
 class ChatMessage(SQLModel, table=True):
     id:            Optional[int] = Field(default=None, primary_key=True)
-    channel_id:    Optional[int] = Field(default=None)   # null ? DM
+    channel_id:    Optional[int] = Field(default=None)   # null â†’ DM
     dm_to_user_id: Optional[int] = Field(default=None)
     sender_id:     int
     sender_name:   str
     content:       str           = Field(default="")
     file_url:      Optional[str] = None
     file_name:     Optional[str] = None
-    reactions:     str           = Field(default="{}")   # JSON {"??": [uid,...]}
+    reactions:     str           = Field(default="{}")   # JSON {"ðŸ˜€": [uid,...]}
+    pinned:        bool          = Field(default=False)
+    parent_id:     Optional[int] = Field(default=None)   # thread parent id
+    created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ScheduledMessage(SQLModel, table=True):
+    id:            Optional[int] = Field(default=None, primary_key=True)
+    sender_id:     int
+    sender_name:   str
+    channel_id:    Optional[int] = Field(default=None)
+    dm_to_user_id: Optional[int] = Field(default=None)
+    content:       str
+    send_at:       datetime
+    sent:          bool          = Field(default=False)
     created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 def create_db_tables():
     SQLModel.metadata.create_all(engine)
+
+
+def migrate_db():
+    """Add new columns to existing tables without losing data."""
+    import sqlalchemy
+    insp = sqlalchemy.inspect(engine)
+    tables = insp.get_table_names()
+    with engine.begin() as conn:
+        if 'chatmessage' in tables:
+            existing = {c['name'] for c in insp.get_columns('chatmessage')}
+            if 'pinned' not in existing:
+                conn.execute(sqlalchemy.text('ALTER TABLE chatmessage ADD COLUMN pinned BOOLEAN DEFAULT FALSE'))
+            if 'parent_id' not in existing:
+                conn.execute(sqlalchemy.text('ALTER TABLE chatmessage ADD COLUMN parent_id INTEGER DEFAULT NULL'))
 
 
 def get_session():
@@ -185,6 +213,7 @@ chat_connections: Dict[int, WebSocket] = {}
 @app.on_event("startup")
 def on_startup():
     create_db_tables()
+    migrate_db()
     log.info("Database ready at %s", DATABASE_URL)
     # Seed default channels if none exist
     with Session(engine) as session:
@@ -198,6 +227,48 @@ def on_startup():
                 session.add(Channel(name=cname, description=cdesc, created_by=0))
             session.commit()
             log.info("Default channels seeded")
+
+
+import asyncio as _asyncio
+
+
+async def _run_scheduler():
+    """Background task: deliver scheduled messages when send_at is reached."""
+    while True:
+        await _asyncio.sleep(20)
+        try:
+            now = datetime.now(timezone.utc)
+            with Session(engine) as sess:
+                pending = sess.exec(
+                    select(ScheduledMessage).where(
+                        ScheduledMessage.sent == False,  # noqa: E712
+                        ScheduledMessage.send_at <= now,
+                    )
+                ).all()
+                for sm in pending:
+                    cm = ChatMessage(
+                        channel_id=sm.channel_id, dm_to_user_id=sm.dm_to_user_id,
+                        sender_id=sm.sender_id, sender_name=sm.sender_name,
+                        content=sm.content,
+                    )
+                    sess.add(cm)
+                    sm.sent = True
+                    sess.add(sm)
+                    sess.commit()
+                    sess.refresh(cm)
+                    if cm.channel_id:
+                        await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
+                    else:
+                        p = {"type": "dm", "message": _msg_dict(cm)}
+                        await _chat_send(cm.dm_to_user_id, p)
+                        await _chat_send(cm.sender_id, p)
+        except Exception as exc:
+            log.warning("Scheduler error: %s", exc)
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    _asyncio.create_task(_run_scheduler())
 
 
 # -------------------------------------------------------------
@@ -419,6 +490,8 @@ def _msg_dict(m: ChatMessage) -> dict:
         "file_url":      m.file_url,
         "file_name":     m.file_name,
         "reactions":     json.loads(m.reactions or "{}"),
+        "pinned":        bool(m.pinned),
+        "parent_id":     m.parent_id,
         "ts":            m.created_at.isoformat(),
     }
 
@@ -442,6 +515,13 @@ async def _chat_send(user_id: int, payload: dict):
 class ChannelCreate(BaseModel):
     name:        str
     description: Optional[str] = None
+
+
+class ScheduledCreate(BaseModel):
+    content:       str
+    channel_id:    Optional[int] = None
+    dm_to_user_id: Optional[int] = None
+    send_at:       str   # ISO-8601 datetime string
 
 
 # -------------------------------------------------------------
@@ -537,6 +617,121 @@ async def upload_file(
     with open(dest, "wb") as fh:
         shutil.copyfileobj(file.file, fh)
     return {"url": f"/uploads/{fname}", "name": original}
+
+
+# -- Pin / unpin a message --
+@app.post("/chat/messages/{msg_id}/pin")
+async def toggle_pin(
+    msg_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    cm = session.get(ChatMessage, msg_id)
+    if not cm:
+        raise HTTPException(status_code=404, detail="Message not found")
+    cm.pinned = not bool(cm.pinned)
+    session.add(cm)
+    session.commit()
+    await _chat_broadcast({"type": "pin_update", "message_id": msg_id, "pinned": cm.pinned})
+    return {"pinned": cm.pinned}
+
+
+# -- Get pinned messages for a channel --
+@app.get("/chat/channels/{channel_id}/pinned")
+def pinned_messages(
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    msgs = session.exec(
+        select(ChatMessage).where(
+            ChatMessage.channel_id == channel_id,
+            ChatMessage.pinned == True,  # noqa: E712
+        ).order_by(ChatMessage.created_at)
+    ).all()
+    return [_msg_dict(m) for m in msgs]
+
+
+# -- Search messages --
+@app.get("/chat/search")
+def search_messages(
+    q: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    from sqlalchemy import or_
+    stmt = select(ChatMessage).where(
+        ChatMessage.content.contains(q),
+        ChatMessage.parent_id == None,  # noqa: E711  top-level only
+    ).order_by(ChatMessage.created_at.desc()).limit(40)
+    msgs = session.exec(stmt).all()
+    return [_msg_dict(m) for m in msgs]
+
+
+# -- Get thread replies for a message --
+@app.get("/chat/messages/{msg_id}/thread")
+def get_thread(
+    msg_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    msgs = session.exec(
+        select(ChatMessage).where(ChatMessage.parent_id == msg_id)
+        .order_by(ChatMessage.created_at)
+    ).all()
+    return [_msg_dict(m) for m in msgs]
+
+
+# -- Scheduled messages --
+@app.post("/chat/scheduled", status_code=201)
+def create_scheduled(
+    req: ScheduledCreate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="Content required")
+    try:
+        send_at = datetime.fromisoformat(req.send_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid send_at datetime")
+    if send_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="send_at must be in the future")
+    sm = ScheduledMessage(
+        sender_id=current_user.id, sender_name=current_user.name,
+        channel_id=req.channel_id, dm_to_user_id=req.dm_to_user_id,
+        content=req.content.strip(), send_at=send_at,
+    )
+    session.add(sm); session.commit(); session.refresh(sm)
+    return {"id": sm.id, "content": sm.content, "send_at": sm.send_at.isoformat()}
+
+
+@app.get("/chat/scheduled")
+def list_scheduled(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    msgs = session.exec(
+        select(ScheduledMessage).where(
+            ScheduledMessage.sender_id == current_user.id,
+            ScheduledMessage.sent == False,  # noqa: E712
+        ).order_by(ScheduledMessage.send_at)
+    ).all()
+    return [{"id": m.id, "content": m.content, "send_at": m.send_at.isoformat(),
+             "channel_id": m.channel_id, "dm_to_user_id": m.dm_to_user_id} for m in msgs]
+
+
+@app.delete("/chat/scheduled/{sm_id}")
+def cancel_scheduled(
+    sm_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    sm = session.get(ScheduledMessage, sm_id)
+    if not sm or sm.sender_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    session.delete(sm); session.commit()
+    return {"ok": True}
 
 
 # -------------------------------------------------------------
@@ -640,6 +835,23 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     cm.reactions = json.dumps(reacts)
                     session.add(cm); session.commit()
                 await _chat_broadcast({"type": "reaction_update", "message_id": msg_id, "reactions": reacts})
+
+            # -- Thread reply --
+            elif mtype == "thread_reply":
+                parent_id  = msg.get("parent_id")
+                content    = (msg.get("content") or "").strip()
+                channel_id = msg.get("channel_id")
+                dm_uid     = msg.get("dm_to_user_id")
+                if not content or not parent_id:
+                    continue
+                with Session(engine) as session:
+                    cm = ChatMessage(
+                        channel_id=channel_id, dm_to_user_id=dm_uid,
+                        sender_id=user_id, sender_name=uname,
+                        content=content, parent_id=parent_id,
+                    )
+                    session.add(cm); session.commit(); session.refresh(cm)
+                await _chat_broadcast({"type": "thread_reply", "message": _msg_dict(cm)})
 
     except (WebSocketDisconnect, Exception) as exc:
         if not isinstance(exc, WebSocketDisconnect):

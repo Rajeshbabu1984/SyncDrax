@@ -109,10 +109,16 @@
     .msg-time   { font-size:.72rem; color:var(--text-muted); }
     .msg-bubble { font-size:.875rem; line-height:1.55; color:var(--text); word-break:break-word;
                   position:relative; padding:2px 0; }
-    .msg-bubble:hover .react-btn { opacity:1; }
-    .react-btn  { opacity:0; position:absolute; right:0; top:-2px; background:var(--bg-sidebar);
-                  border:1px solid var(--border); border-radius:6px; padding:3px 7px;
-                  cursor:pointer; font-size:.8rem; transition:opacity .15s; }
+    .msg-bubble:hover .msg-actions { opacity:1; }
+    .msg-actions { opacity:0; position:absolute; right:0; top:-4px;
+                   display:flex; gap:2px; transition:opacity .15s; z-index:1; }
+    .msg-actions .react-btn { opacity:1; position:static; background:var(--bg-sidebar);
+                               border:1px solid var(--border); border-radius:6px; padding:3px 7px;
+                               cursor:pointer; font-size:.8rem; transition:background .15s; }
+    .msg-actions .react-btn:hover { background:var(--bg-hover); }
+    .reply-count { margin-top:3px; background:none; border:1px solid var(--border);
+                   border-radius:6px; padding:2px 8px; font-size:.75rem; color:var(--purple-l);
+                   cursor:pointer; }
 
     .reactions-row { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
     .reaction-pill { display:flex; align-items:center; gap:4px; background:var(--bg-sidebar);
@@ -205,6 +211,89 @@
              font-size:.85rem; opacity:0; transform:translateY(8px);
              transition:opacity .3s, transform .3s; z-index:600; pointer-events:none; }
     #toast.show { opacity:1; transform:translateY(0); }
+
+    /* ── Header actions ── */
+    .header-actions { margin-left:auto; display:flex; align-items:center; gap:6px; }
+    .pinned-badge { background:var(--purple); color:#fff; font-size:.7rem; font-weight:700;
+                    border-radius:10px; padding:2px 8px; cursor:pointer; white-space:nowrap; }
+    .pinned-badge:hover { background:var(--purple-l); }
+
+    /* ── Pinned bar ── */
+    .pinned-bar { background:rgba(124,58,237,.12); border-bottom:1px solid rgba(124,58,237,.3);
+                  padding:8px 20px; font-size:.8rem; flex-shrink:0; }
+    .pinned-bar .pin-item { display:flex; align-items:center; gap:10px; padding:4px 0;
+                            border-bottom:1px solid rgba(255,255,255,.05); }
+    .pinned-bar .pin-item:last-child { border-bottom:none; }
+    .pinned-bar .pin-text { flex:1; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pinned-bar .pin-who  { color:var(--text-muted); font-size:.72rem; }
+    .pinned-bar .unpin-btn { background:none; border:none; color:var(--text-muted); cursor:pointer;
+                              font-size:.8rem; padding:2px 6px; border-radius:4px; }
+    .pinned-bar .unpin-btn:hover { color:#e55; }
+
+    /* ── Thread panel ── */
+    .thread-panel { width:320px; min-width:320px; background:var(--bg-sidebar);
+                    border-left:1px solid var(--border); display:flex; flex-direction:column;
+                    transition:width .2s; }
+    .thread-panel.hidden { display:none; }
+    .thread-hdr { padding:14px 16px; border-bottom:1px solid var(--border);
+                  display:flex; align-items:center; gap:8px; flex-shrink:0; }
+    .thread-hdr span { font-weight:600; font-size:.9rem; flex:1; }
+    .close-thread { background:none; border:none; color:var(--text-muted); cursor:pointer;
+                    font-size:1rem; border-radius:6px; padding:3px 7px; }
+    .close-thread:hover { color:var(--text); }
+    .thread-parent { padding:12px 14px; border-bottom:1px solid var(--border);
+                     font-size:.82rem; color:var(--text-muted); flex-shrink:0;
+                     background:rgba(0,0,0,.15); }
+    .thread-parent .tp-name { font-weight:600; color:var(--text); }
+    .thread-msgs   { flex:1; overflow-y:auto; padding:12px 14px; }
+    .thread-msgs::-webkit-scrollbar { width:4px; }
+    .thread-msgs::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+    .thread-input-area { padding:10px 12px; border-top:1px solid var(--border); flex-shrink:0; }
+    .thread-box { display:flex; gap:8px; background:var(--bg-input);
+                  border:1px solid var(--border); border-radius:10px; padding:6px 10px; }
+    .thread-box:focus-within { border-color:var(--purple); }
+    #threadInput { flex:1; background:none; border:none; outline:none; color:var(--text);
+                   font-family:inherit; font-size:.85rem; resize:none; min-height:20px;
+                   max-height:80px; padding:2px 0; }
+    #threadInput::placeholder { color:var(--text-muted); }
+    .thread-send { background:var(--purple); border:none; color:#fff; border-radius:6px;
+                   padding:5px 12px; cursor:pointer; font-size:.8rem; font-weight:600; }
+    .thread-send:hover { background:var(--purple-l); }
+
+    /* ── Search overlay ── */
+    .search-overlay { position:fixed; top:0; left:260px; right:0; z-index:300;
+                      background:rgba(0,0,0,.5); height:100vh;
+                      display:flex; flex-direction:column; align-items:center;
+                      padding-top:60px; }
+    .search-overlay.hidden { display:none; }
+    .search-box { background:var(--bg-sidebar); border:1px solid var(--border);
+                  border-radius:14px; width:580px; max-width:95%; overflow:hidden; }
+    .search-input-wrap { display:flex; align-items:center; gap:10px; padding:14px 18px;
+                         border-bottom:1px solid var(--border); }
+    .search-input-wrap i { color:var(--text-muted); }
+    #searchInput { flex:1; background:none; border:none; outline:none; color:var(--text);
+                   font-family:inherit; font-size:1rem; }
+    #searchInput::placeholder { color:var(--text-muted); }
+    .close-search { background:none; border:none; color:var(--text-muted); cursor:pointer;
+                    font-size:.9rem; padding:2px 8px; border-radius:6px; }
+    .search-results { max-height:420px; overflow-y:auto; padding:8px 0; }
+    .search-result-item { padding:10px 18px; cursor:pointer; border-bottom:1px solid var(--border); }
+    .search-result-item:hover { background:var(--bg-hover); }
+    .sri-meta { font-size:.72rem; color:var(--text-muted); margin-bottom:3px; }
+    .sri-text { font-size:.875rem; color:var(--text); }
+    .sri-text mark { background:rgba(124,58,237,.35); color:var(--text); border-radius:3px; padding:0 2px; }
+    .search-empty { padding:28px; text-align:center; color:var(--text-muted); font-size:.85rem; }
+
+    /* ── Schedule modal ── */
+    .sched-list { margin-top:16px; max-height:200px; overflow-y:auto; }
+    .sched-item { display:flex; align-items:center; gap:10px; padding:8px 0;
+                  border-bottom:1px solid var(--border); font-size:.83rem; }
+    .sched-item:last-child { border-bottom:none; }
+    .sched-item .si-text { flex:1; color:var(--text); }
+    .sched-item .si-time { color:var(--text-muted); font-size:.72rem; white-space:nowrap; }
+    .sched-del { background:none; border:none; color:var(--text-muted); cursor:pointer;
+                 font-size:.85rem; padding:2px 6px; border-radius:4px; }
+    .sched-del:hover { color:#e55; }
   </style>
 </head>
 <body>
@@ -262,7 +351,12 @@
     <div class="chat-header">
       <span id="chatTitle" class="chat-title"># general</span>
       <span id="chatDesc" class="chat-desc"></span>
+      <div class="header-actions">
+        <button class="ia-btn" id="searchBtn" title="Search"><i class="fa-solid fa-magnifying-glass"></i></button>
+        <span id="pinnedBadge" class="pinned-badge hidden">📌 0 pinned</span>
+      </div>
     </div>
+    <div class="pinned-bar hidden" id="pinnedBar"></div>
     <div class="messages-wrap" id="messagesWrap"></div>
     <div class="typing-bar" id="typingBar"></div>
     <div class="input-area">
@@ -273,12 +367,29 @@
             <i class="fa-solid fa-paperclip"></i>
           </label>
           <input type="file" id="fileInput" hidden />
+          <button class="ia-btn" id="scheduleBtn" title="Schedule message"><i class="fa-regular fa-clock"></i></button>
         </div>
         <textarea id="msgInput" rows="1" placeholder="Message # general"></textarea>
         <button class="send-btn" id="sendBtn">Send</button>
       </div>
     </div>
   </main>
+
+  <!-- Thread panel -->
+  <div class="thread-panel hidden" id="threadPanel">
+    <div class="thread-hdr">
+      <span>🧵 Thread</span>
+      <button class="close-thread" id="closeThreadBtn">✕</button>
+    </div>
+    <div class="thread-parent" id="threadParentMsg"></div>
+    <div class="thread-msgs" id="threadMsgs"></div>
+    <div class="thread-input-area">
+      <div class="thread-box">
+        <textarea id="threadInput" rows="1" placeholder="Reply in thread…"></textarea>
+        <button class="thread-send" id="threadSendBtn">Send</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Emoji picker for input -->
@@ -315,6 +426,36 @@
 </div>
 
 <div id="toast"></div>
+
+<!-- Search overlay -->
+<div class="search-overlay hidden" id="searchOverlay">
+  <div class="search-box">
+    <div class="search-input-wrap">
+      <i class="fa-solid fa-magnifying-glass"></i>
+      <input id="searchInput" placeholder="Search messages…" autocomplete="off" />
+      <button class="close-search" id="closeSearchBtn">✕</button>
+    </div>
+    <div class="search-results" id="searchResults">
+      <div class="search-empty">Type to search across all channels and DMs</div>
+    </div>
+  </div>
+</div>
+
+<!-- Schedule modal -->
+<div class="overlay hidden" id="scheduleOverlay">
+  <div class="modal-card" style="width:460px;">
+    <h3>⏰ Schedule a Message</h3>
+    <label>Message</label>
+    <textarea class="modal-input" id="schedMsgInput" rows="3" placeholder="Your message…" style="resize:none;"></textarea>
+    <label style="margin-top:12px;">Send at</label>
+    <input class="modal-input" id="schedTimeInput" type="datetime-local" />
+    <div class="sched-list" id="schedList"></div>
+    <div class="modal-row" style="margin-top:20px;">
+      <button class="modal-btn secondary" id="cancelSchedBtn">Cancel</button>
+      <button class="modal-btn primary" id="createSchedBtn">Schedule</button>
+    </div>
+  </div>
+</div>
 
 <script src="js/chatapp.js"></script>
 </body>

@@ -41,6 +41,9 @@ let emojiTarget   = null;    // 'input' or message_id for reaction
 let pendingEmoji  = '💬';   // selected channel emoji
 let unread        = {};      // { cid: count }
 let allUsers      = [];      // [{id, name}] from /chat/users
+let threadParentId   = null;
+let threadParentData = null;
+let searchTimeout    = null;
 
 const CHANNEL_EMOJIS = [
   '💬','📣','🔥','🎉','🛠️','📢','🌍','🎵','🚀','💡','🎯','🧠',
@@ -91,6 +94,43 @@ async function initChat() {
     emojiPickerEl.classList.toggle('hidden');
   });
   document.addEventListener('click', () => emojiPickerEl.classList.add('hidden'));
+
+  // Search
+  document.getElementById('searchBtn').addEventListener('click', openSearch);
+  document.getElementById('closeSearchBtn').addEventListener('click', closeSearch);
+  document.getElementById('searchInput').addEventListener('input', e => {
+    clearTimeout(searchTimeout);
+    const q = e.target.value.trim();
+    if (q.length < 2) {
+      document.getElementById('searchResults').innerHTML = '<div class="search-empty">Type to search across all channels and DMs</div>';
+      return;
+    }
+    searchTimeout = setTimeout(() => doSearch(q), 350);
+  });
+  document.getElementById('searchOverlay').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeSearch();
+  });
+
+  // Thread
+  document.getElementById('closeThreadBtn').addEventListener('click', closeThread);
+  document.getElementById('threadSendBtn').addEventListener('click', sendThreadReply);
+  document.getElementById('threadInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadReply(); }
+  });
+  document.getElementById('threadInput').addEventListener('input', () => {
+    const t = document.getElementById('threadInput');
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 80) + 'px';
+  });
+
+  // Schedule
+  document.getElementById('scheduleBtn').addEventListener('click', openScheduleModal);
+  document.getElementById('cancelSchedBtn').addEventListener('click', () =>
+    document.getElementById('scheduleOverlay').classList.add('hidden'));
+  document.getElementById('createSchedBtn').addEventListener('click', createScheduled);
+
+  // Pinned bar toggle
+  document.getElementById('pinnedBadge').addEventListener('click', togglePinnedBar);
 
   // Auto-resize textarea
   msgInput.addEventListener('input', () => {
@@ -178,6 +218,36 @@ function handleServerMsg(msg) {
       }
       break;
     }
+
+    case 'pin_update': {
+      const msgEl = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+      if (msgEl) {
+        const btn = msgEl.querySelector('.pin-msg-btn');
+        if (btn) { btn.title = msg.pinned ? 'Unpin' : 'Pin'; btn.style.color = msg.pinned ? 'var(--purple-l)' : ''; }
+        if (msg.pinned) msgEl.dataset.pinned = '1'; else delete msgEl.dataset.pinned;
+      }
+      if (activeType === 'channel') loadPinnedMessages(activeId);
+      break;
+    }
+
+    case 'thread_reply': {
+      const m = msg.message;
+      if (threadParentId === m.parent_id) {
+        appendThreadMsg(m);
+        const tm = document.getElementById('threadMsgs');
+        tm.scrollTop = tm.scrollHeight;
+      }
+      // Increment reply count badge on parent bubble
+      const parentEl = document.querySelector(`[data-msg-id="${m.parent_id}"]`);
+      if (parentEl) {
+        let rb = parentEl.querySelector('.reply-count');
+        const cur = parseInt(rb?.dataset.count || '0') + 1;
+        if (!rb) { rb = document.createElement('button'); rb.className = 'reply-count react-btn'; rb.onclick = () => openThreadById(m.parent_id); parentEl.appendChild(rb); }
+        rb.dataset.count = cur;
+        rb.textContent = `🧵 ${cur} repl${cur === 1 ? 'y' : 'ies'}`;
+      }
+      break;
+    }
   }
 }
 
@@ -214,7 +284,7 @@ async function openChannel(ch) {
   msgInput.placeholder   = `Message ${ch.name}`;
   messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:20px 0;">Loading…</div>';
   renderChannelList();
-  await loadMessages('channel', ch.id);
+  await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id)]);
 }
 
 // ── DMs ───────────────────────────────────────────────────────────────────────
@@ -310,6 +380,13 @@ function appendMessage(m, initial) {
   const bubble  = document.createElement('div');
   bubble.className       = 'msg-bubble';
   bubble.dataset.msgId   = m.id;
+  bubble.dataset.msgSender  = m.sender_name;
+  bubble.dataset.msgContent = m.content || '';
+  bubble.dataset.msgTs      = m.ts;
+  bubble.dataset.channelId  = m.channel_id || '';
+  bubble.dataset.dmUid      = m.dm_to_user_id || '';
+  if (m.pinned)    bubble.dataset.pinned   = '1';
+  if (m.parent_id) bubble.dataset.parentId = m.parent_id;
 
   let inner = '';
   if (m.content) inner += `<span class="msg-text">${esc(m.content)}</span>`;
@@ -322,7 +399,11 @@ function appendMessage(m, initial) {
       inner += `<a class="msg-file" href="${fullUrl}" target="_blank" download="${esc(m.file_name||'file')}"><i class="fa-solid fa-file"></i>${esc(m.file_name||'file')}</a>`;
     }
   }
-  inner += `<button class="react-btn" onclick="openReactionPicker(event, ${m.id})">😊+</button>`;
+  inner += `<span class="msg-actions">
+    <button class="react-btn" onclick="openReactionPicker(event,${m.id})" title="React">😊</button>
+    <button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>
+    <button class="react-btn" onclick="openThreadById(${m.id})" title="Reply in thread">🧵</button>
+  </span>`;
   inner += `<div class="reactions-row"></div>`;
   bubble.innerHTML = inner;
 
@@ -545,6 +626,219 @@ function showToast(msg) {
 
 // Expose globally for inline onclick
 window.openReactionPicker = openReactionPicker;
+window.togglePin          = togglePin;
+window.openThreadById     = openThreadById;
+
+// ── Pin messages ────────────────────────────────────────────────────────────────
+async function togglePin(msgId) {
+  const res = await authFetch(`/chat/messages/${msgId}/pin`, 'POST');
+  if (!res.ok) showToast('Could not pin message');
+}
+
+async function loadPinnedMessages(channelId) {
+  const res = await authFetch(`/chat/channels/${channelId}/pinned`);
+  if (!res.ok) return;
+  const msgs = await res.json();
+  const badge = document.getElementById('pinnedBadge');
+  const bar   = document.getElementById('pinnedBar');
+  if (!msgs.length) {
+    badge.classList.add('hidden');
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  badge.textContent = `📌 ${msgs.length} pinned`;
+  badge.classList.remove('hidden');
+  // Keep bar visibility state but update content
+  renderPinnedBar(msgs);
+}
+
+function renderPinnedBar(msgs) {
+  const bar = document.getElementById('pinnedBar');
+  bar.innerHTML = msgs.map(m => `
+    <div class="pin-item">
+      <span class="pin-who">${esc(m.sender_name)}</span>
+      <span class="pin-text">${esc(m.content || (m.file_name ? '📎 ' + m.file_name : ''))}</span>
+      <button class="unpin-btn" onclick="togglePin(${m.id})" title="Unpin">✕</button>
+    </div>`).join('');
+}
+
+function togglePinnedBar() {
+  document.getElementById('pinnedBar').classList.toggle('hidden');
+}
+
+// ── Search ─────────────────────────────────────────────────────────────────
+function openSearch() {
+  document.getElementById('searchOverlay').classList.remove('hidden');
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchResults').innerHTML = '<div class="search-empty">Type to search across all channels and DMs</div>';
+  setTimeout(() => document.getElementById('searchInput').focus(), 50);
+}
+
+function closeSearch() {
+  document.getElementById('searchOverlay').classList.add('hidden');
+}
+
+async function doSearch(q) {
+  const res = await authFetch(`/chat/search?q=${encodeURIComponent(q)}`);
+  const resultsEl = document.getElementById('searchResults');
+  if (!res.ok) { resultsEl.innerHTML = '<div class="search-empty">Search failed</div>'; return; }
+  const msgs = await res.json();
+  if (!msgs.length) { resultsEl.innerHTML = '<div class="search-empty">No results for "' + esc(q) + '"</div>'; return; }
+  const highlighted = str => esc(str).replace(new RegExp(esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => `<mark>${m}</mark>`);
+  resultsEl.innerHTML = msgs.map(m => {
+    const where = m.channel_id
+      ? (channels.find(c => c.id === m.channel_id)?.name || `#${m.channel_id}`)
+      : `@ DM`;
+    return `<div class="search-result-item" onclick="jumpToMsg(${m.channel_id},${m.dm_to_user_id},${m.sender_id})">
+      <div class="sri-meta">${esc(m.sender_name)} in <b>${esc(where)}</b> · ${formatTime(m.ts)}</div>
+      <div class="sri-text">${highlighted(m.content || (m.file_name ? '📎 ' + m.file_name : ''))}</div>
+    </div>`;
+  }).join('');
+}
+
+function jumpToMsg(channelId, dmUid, senderId) {
+  closeSearch();
+  if (channelId) {
+    const ch = channels.find(c => c.id === channelId);
+    if (ch) openChannel(ch);
+  } else if (dmUid) {
+    const info = dmUsers[dmUid] || dmUsers[senderId];
+    const uid  = dmUsers[dmUid] ? dmUid : senderId !== user.id ? senderId : null;
+    if (uid && dmUsers[uid]) openDm(uid, dmUsers[uid].name);
+  }
+}
+window.jumpToMsg = jumpToMsg;
+
+// ── Threads ─────────────────────────────────────────────────────────────
+function openThreadById(msgId) {
+  const el = document.querySelector(`[data-msg-id="${msgId}"]`);
+  if (!el) return;
+  const m = {
+    id:            msgId,
+    sender_name:   el.dataset.msgSender,
+    content:       el.dataset.msgContent,
+    ts:            el.dataset.msgTs,
+    channel_id:    el.dataset.channelId ? parseInt(el.dataset.channelId) : null,
+    dm_to_user_id: el.dataset.dmUid    ? parseInt(el.dataset.dmUid)     : null,
+  };
+  openThread(m);
+}
+
+async function openThread(m) {
+  threadParentId   = m.id;
+  threadParentData = m;
+  // Show panel
+  document.getElementById('threadPanel').classList.remove('hidden');
+  // Render parent message preview
+  const p = document.getElementById('threadParentMsg');
+  p.innerHTML = `<span class="tp-name">${esc(m.sender_name)}</span>: ${esc(m.content || (m.file_name ? '📎 ' + m.file_name : ''))}<br><span style="font-size:.7rem;">${formatTime(m.ts)}</span>`;
+  // Load replies
+  const tmsgs = document.getElementById('threadMsgs');
+  tmsgs.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:10px 0;">Loading…</div>';
+  const res = await authFetch(`/chat/messages/${m.id}/thread`);
+  tmsgs.innerHTML = '';
+  if (!res.ok) return;
+  const replies = await res.json();
+  if (!replies.length) {
+    tmsgs.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0;">No replies yet.</div>';
+    return;
+  }
+  replies.forEach(r => appendThreadMsg(r));
+  tmsgs.scrollTop = tmsgs.scrollHeight;
+}
+
+function appendThreadMsg(m) {
+  const tmsgs = document.getElementById('threadMsgs');
+  const div = document.createElement('div');
+  div.className = 'msg-group';
+  div.style.marginBottom = '12px';
+  div.innerHTML = `
+    <div class="msg-header">
+      <span class="msg-name">${esc(m.sender_name)}</span>
+      <span class="msg-time">${formatTime(m.ts)}</span>
+    </div>
+    <div class="msg-bubble" style="font-size:.85rem;">${esc(m.content)}</div>`;
+  tmsgs.appendChild(div);
+}
+
+function closeThread() {
+  document.getElementById('threadPanel').classList.add('hidden');
+  threadParentId   = null;
+  threadParentData = null;
+  document.getElementById('threadMsgs').innerHTML = '';
+  document.getElementById('threadInput').value = '';
+}
+
+function sendThreadReply() {
+  const input = document.getElementById('threadInput');
+  const text  = input.value.trim();
+  if (!text || !threadParentId) return;
+  wsSend({
+    type:          'thread_reply',
+    parent_id:     threadParentId,
+    content:       text,
+    channel_id:    threadParentData?.channel_id    || null,
+    dm_to_user_id: threadParentData?.dm_to_user_id || null,
+  });
+  input.value = '';
+  input.style.height = 'auto';
+}
+
+// ── Scheduled messages ──────────────────────────────────────────────
+async function openScheduleModal() {
+  if (!activeId) { showToast('Open a channel or DM first'); return; }
+  document.getElementById('scheduleOverlay').classList.remove('hidden');
+  document.getElementById('schedMsgInput').value = msgInput.value.trim();
+  // Default: 1 hour from now
+  const d = new Date(Date.now() + 60 * 60 * 1000);
+  d.setSeconds(0, 0);
+  document.getElementById('schedTimeInput').value = d.toISOString().slice(0, 16);
+  await loadScheduled();
+}
+
+async function loadScheduled() {
+  const res = await authFetch('/chat/scheduled');
+  if (!res.ok) return;
+  const items = await res.json();
+  renderScheduled(items);
+}
+
+function renderScheduled(items) {
+  const el = document.getElementById('schedList');
+  if (!items.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:8px 0;">No scheduled messages yet.</div>'; return; }
+  el.innerHTML = items.map(it => {
+    const where = it.channel_id
+      ? (channels.find(c => c.id === it.channel_id)?.name || `#${it.channel_id}`)
+      : 'DM';
+    return `<div class="sched-item">
+      <span class="si-text">${esc(it.content)} <span style="color:var(--text-muted);font-size:.7rem;">→ ${esc(where)}</span></span>
+      <span class="si-time">${formatTime(it.send_at)}</span>
+      <button class="sched-del" onclick="deleteScheduled(${it.id})">✕</button>
+    </div>`;
+  }).join('');
+}
+window.deleteScheduled = deleteScheduled;
+
+async function createScheduled() {
+  const content = document.getElementById('schedMsgInput').value.trim();
+  const sendAt  = document.getElementById('schedTimeInput').value;
+  if (!content) { showToast('Enter a message'); return; }
+  if (!sendAt)  { showToast('Pick a send time'); return; }
+  const body = { content, send_at: new Date(sendAt).toISOString() };
+  if (activeType === 'channel') body.channel_id    = activeId;
+  else                          body.dm_to_user_id = activeId;
+  const res = await authFetch('/chat/scheduled', 'POST', body);
+  if (!res.ok) { const e = await res.json(); showToast(e.detail || 'Could not schedule'); return; }
+  showToast('Message scheduled! ⏰');
+  document.getElementById('schedMsgInput').value = '';
+  await loadScheduled();
+}
+
+async function deleteScheduled(id) {
+  await authFetch(`/chat/scheduled/${id}`, 'DELETE');
+  await loadScheduled();
+}
 
 // ── Boot (must be last — all consts/lets must be initialized first) ───────────
 if (!user || !token) {
