@@ -572,11 +572,15 @@
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem; font-weight: 700; color: var(--text-bright);
 }
+.bg-header-actions { display: flex; align-items: center; gap: 4px; }
 .bg-panel-header button {
   background: none; border: none; color: var(--text-muted);
   cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 4px;
 }
 .bg-panel-header button:hover { background: var(--bg-hover); color: var(--text-bright); }
+#uploadBgOption { color: var(--purple-light) !important; font-size: 0.95rem !important; }
+#uploadBgOption:hover { background: rgba(124,58,237,.2) !important; color: var(--purple-light) !important; }
+#uploadBgOption.active { color: #fff !important; background: var(--purple) !important; }
 
 .bg-options {
   display: grid;

@@ -253,7 +253,10 @@
     <div class="bg-panel hidden" id="bgPanel">
       <div class="bg-panel-header">
         <span><i class="fa-solid fa-image"></i> Virtual Backgrounds</span>
-        <button id="closeBgPanel"><i class="fa-solid fa-xmark"></i></button>
+        <div class="bg-header-actions">
+          <button id="uploadBgOption" title="Upload custom background"><i class="fa-solid fa-plus"></i></button>
+          <button id="closeBgPanel"><i class="fa-solid fa-xmark"></i></button>
+        </div>
       </div>
       <div class="bg-options" id="bgOptions">
         <div class="bg-option active" data-bg="none">
@@ -309,11 +312,7 @@
           <span>Home Interior</span>
           <button class="dl-btn" data-name="home-interior"><i class="fa-solid fa-download"></i></button>
         </div>
-        <!-- Custom upload -->
-        <div class="bg-option" id="uploadBgOption" data-bg="custom">
-          <div class="bg-thumb upload-thumb" id="uploadBgThumb"><i class="fa-solid fa-plus"></i></div>
-          <span id="uploadBgLabel">Upload</span>
-        </div>
+        <!-- hidden input for upload -->
       </div>
     </div>
 

@@ -570,7 +570,6 @@
   bgOptions.forEach(opt => {
     opt.addEventListener('click', async (e) => {
       if (e.target.closest('.dl-btn')) return; // handled by download button
-      if (opt.dataset.bg === 'custom') return;  // handled by file input
       bgOptions.forEach(o => o.classList.remove('active'));
       opt.classList.add('active');
       const bgKey = opt.dataset.bg;
@@ -591,8 +590,6 @@
   // Custom background upload
   const customBgInput   = document.getElementById('customBgInput');
   const uploadBgOption  = document.getElementById('uploadBgOption');
-  const uploadBgThumb   = document.getElementById('uploadBgThumb');
-  const uploadBgLabel   = document.getElementById('uploadBgLabel');
 
   uploadBgOption.addEventListener('click', () => customBgInput.click());
 
@@ -603,15 +600,14 @@
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const dataUrl = ev.target.result;
-      // Update tile thumbnail
-      uploadBgThumb.style.cssText = `background-image:url('${dataUrl}');background-size:cover;background-position:center;font-size:0;border:none;`;
-      uploadBgLabel.textContent = file.name.replace(/\.[^.]+$/, '').substring(0, 14);
-      // Mark active
+      // Mark all tiles inactive (custom upload has no tile)
       bgOptions.forEach(o => o.classList.remove('active'));
       uploadBgOption.classList.add('active');
+      setTimeout(() => uploadBgOption.classList.remove('active'), 600);
       if (!bgEngineLocal) return;
       const canvasTrack = bgEngineLocal.setCustomBackground(dataUrl);
       if (rtc && canvasTrack) await rtc.replaceVideoTrack(canvasTrack);
+      showToast('Custom background applied');
     };
     reader.readAsDataURL(file);
   });
