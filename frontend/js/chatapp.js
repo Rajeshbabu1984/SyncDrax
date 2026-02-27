@@ -42,7 +42,7 @@ const fileInput      = document.getElementById('fileInput');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws            = null;
-let channels      = [];      // [{id, name, description}]
+let channels      = [];      // [{id, name, description, created_by}]
 let activeType    = null;    // 'channel' | 'dm'
 let activeId      = null;    // channel id or user id
 let activeDmName  = '';
@@ -410,9 +410,13 @@ function appendMessage(m, initial) {
       inner += `<a class="msg-file" href="${fullUrl}" target="_blank" download="${esc(m.file_name||'file')}"><i class="fa-solid fa-file"></i>${esc(m.file_name||'file')}</a>`;
     }
   }
+  // Show pin button only to channel owner (created_by === 0 means seeded/system channel — anyone can pin)
+  const activeChannel = activeType === 'channel' ? channels.find(c => c.id === activeId) : null;
+  const canPin = activeType === 'dm' || !activeChannel || activeChannel.created_by === 0 || activeChannel.created_by === user.id;
+
   inner += `<span class="msg-actions">
     <button class="react-btn" onclick="openReactionPicker(event,${m.id})" title="React">😊</button>
-    <button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>
+    ${canPin ? `<button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>` : ''}
     <button class="react-btn" onclick="openThreadById(${m.id})" title="Reply in thread">🧵</button>
   </span>`;
   inner += `<div class="reactions-row"></div>`;
@@ -643,6 +647,7 @@ window.openThreadById     = openThreadById;
 // ── Pin messages ────────────────────────────────────────────────────────────────
 async function togglePin(msgId) {
   const res = await authFetch(`/chat/messages/${msgId}/pin`, 'POST');
+  if (res.status === 403) { showToast('Only the channel owner can pin messages'); return; }
   if (!res.ok) showToast('Could not pin message');
 }
 

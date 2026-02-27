@@ -533,7 +533,7 @@ def list_channels(
     session: Session = Depends(get_session),
 ):
     channels = session.exec(select(Channel).order_by(Channel.created_at)).all()
-    return [{"id": c.id, "name": c.name, "description": c.description} for c in channels]
+    return [{"id": c.id, "name": c.name, "description": c.description, "created_by": c.created_by} for c in channels]
 
 
 @app.post("/chat/channels", status_code=201)
@@ -629,6 +629,11 @@ async def toggle_pin(
     cm = session.get(ChatMessage, msg_id)
     if not cm:
         raise HTTPException(status_code=404, detail="Message not found")
+    # Only the channel owner can pin (DM messages: either participant can pin)
+    if cm.channel_id:
+        ch = session.get(Channel, cm.channel_id)
+        if ch and ch.created_by != 0 and ch.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="Only the channel owner can pin messages")
     cm.pinned = not bool(cm.pinned)
     session.add(cm)
     session.commit()
