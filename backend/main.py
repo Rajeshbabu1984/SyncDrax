@@ -215,18 +215,28 @@ def on_startup():
     create_db_tables()
     migrate_db()
     log.info("Database ready at %s", DATABASE_URL)
-    # Seed default channels if none exist
+    # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
+    _DEFAULT_CHANNELS = [
+        (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
+        (2, "\U0001f3b2 random",   "Non-work banter and fun"),
+        (3, "\U0001f6e0 dev",      "Engineering discussions"),
+        (4, "\U0001f4e2 updates",  "Product and release updates"),
+    ]
     with Session(engine) as session:
-        if not session.exec(select(Channel)).first():
-            for cname, cdesc in [
-                ("?? general",  "Company-wide announcements and general chat"),
-                ("?? random",   "Non-work banter and fun"),
-                ("??? dev",      "Engineering discussions"),
-                ("?? updates",  "Product and release updates"),
-            ]:
+        existing = session.exec(select(Channel)).all()
+        if not existing:
+            for _, cname, cdesc in _DEFAULT_CHANNELS:
                 session.add(Channel(name=cname, description=cdesc, created_by=0))
             session.commit()
             log.info("Default channels seeded")
+        else:
+            # Fix any corrupted names (contain replacement char \ufffd or literal ?)
+            for ch in existing:
+                fix = next((c for c in _DEFAULT_CHANNELS if c[0] == ch.id), None)
+                if fix and ('?' in ch.name or '\ufffd' in ch.name):
+                    ch.name = fix[1]
+                    session.add(ch)
+            session.commit()
 
 
 import asyncio as _asyncio
@@ -617,6 +627,27 @@ async def upload_file(
     with open(dest, "wb") as fh:
         shutil.copyfileobj(file.file, fh)
     return {"url": f"/uploads/{fname}", "name": original}
+
+
+@app.delete("/chat/channels/{channel_id}", status_code=200)
+async def delete_channel(
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ch = session.get(Channel, channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if ch.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the channel owner can delete this channel")
+    # Delete all messages in channel first
+    msgs = session.exec(select(ChatMessage).where(ChatMessage.channel_id == channel_id)).all()
+    for m in msgs:
+        session.delete(m)
+    session.delete(ch)
+    session.commit()
+    await _chat_broadcast({"type": "channel_deleted", "channel_id": channel_id})
+    return {"ok": True}
 
 
 # -- Pin / unpin a message --

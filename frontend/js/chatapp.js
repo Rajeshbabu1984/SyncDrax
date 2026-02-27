@@ -232,6 +232,19 @@ function handleServerMsg(msg) {
       break;
     }
 
+    case 'channel_deleted': {
+      channels = channels.filter(c => c.id !== msg.channel_id);
+      if (activeType === 'channel' && activeId === msg.channel_id) {
+        messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:40px;text-align:center;">This channel was deleted.</div>';
+        chatTitle.textContent = '';
+        chatDesc.textContent  = '';
+        activeId = null;
+      }
+      renderChannelList();
+      showToast('Channel deleted');
+      break;
+    }
+
     case 'pin_update': {
       const msgEl = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
       if (msgEl) {
@@ -278,7 +291,11 @@ function renderChannelList() {
     const li = document.createElement('li');
     li.className = `ch-item${activeType === 'channel' && activeId === ch.id ? ' active' : ''}`;
     li.dataset.id = ch.id;
-    li.innerHTML = `<span class="ch-name">${esc(ch.name)}</span>`;
+    const isOwner = ch.created_by !== 0 && ch.created_by === user.id;
+    const delBtn  = isOwner
+      ? `<button class="ch-del-btn" onclick="deleteChannel(event,${ch.id})" title="Delete channel">✕</button>`
+      : '';
+    li.innerHTML = `<span class="ch-name">${esc(ch.name)}</span>${delBtn}`;
     if (unread[ch.id]) {
       li.innerHTML += `<span class="ch-badge">${unread[ch.id]}</span>`;
     }
@@ -650,6 +667,16 @@ function showToast(msg) {
 window.openReactionPicker = openReactionPicker;
 window.togglePin          = togglePin;
 window.openThreadById     = openThreadById;
+window.deleteChannel      = deleteChannel;
+
+// ── Delete channel ────────────────────────────────────────────────────────────
+async function deleteChannel(e, channelId) {
+  e.stopPropagation(); // don't open the channel when clicking delete
+  if (!confirm('Delete this channel and all its messages? This cannot be undone.')) return;
+  const res = await authFetch(`/chat/channels/${channelId}`, 'DELETE');
+  if (res.status === 403) { showToast('Only the channel owner can delete this'); return; }
+  if (!res.ok) { showToast('Could not delete channel'); return; }
+}
 
 // ── Pin messages ────────────────────────────────────────────────────────────────
 async function togglePin(msgId) {

@@ -75,6 +75,11 @@
     .ch-name   { flex:1 truncate; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .ch-badge  { background:var(--purple); color:#fff; font-size:.65rem; font-weight:700;
                  border-radius:10px; padding:1px 6px; min-width:18px; text-align:center; }
+    .ch-del-btn { display:none; background:none; border:none; color:var(--text-muted);
+                  cursor:pointer; font-size:.75rem; padding:1px 5px; border-radius:4px;
+                  line-height:1; flex-shrink:0; }
+    .ch-item:hover .ch-del-btn { display:block; }
+    .ch-del-btn:hover { color:#e55; background:rgba(220,50,50,.15); }
 
     .dm-avatar { width:24px; height:24px; border-radius:50%; background:var(--purple);
                  display:flex; align-items:center; justify-content:center; font-size:.65rem;
