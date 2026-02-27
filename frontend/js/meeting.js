@@ -573,8 +573,17 @@
     const opt = e.target.closest('.bg-option');
     if (!opt) return;
     const bgKey = opt.dataset.bg;
-    // Custom tile just triggers the file picker
-    if (bgKey === 'custom') { document.getElementById('customBgInput').click(); return; }
+    // Custom tile: apply the saved background, don't open file picker
+    if (bgKey === 'custom') {
+      const saved = localStorage.getItem('syncdrax_custom_bg');
+      if (!saved) { document.getElementById('customBgInput').click(); return; }
+      document.querySelectorAll('.bg-option').forEach(o => o.classList.remove('active'));
+      opt.classList.add('active');
+      if (!bgEngineLocal) return;
+      const canvasTrack = bgEngineLocal.setCustomBackground(saved);
+      if (rtc && canvasTrack) await rtc.replaceVideoTrack(canvasTrack);
+      return;
+    }
     document.querySelectorAll('.bg-option').forEach(o => o.classList.remove('active'));
     opt.classList.add('active');
     if (!bgEngineLocal) return;
