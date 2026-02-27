@@ -1,5 +1,5 @@
 /* =======================================================
-   SyncDrax — Meeting Orchestrator (meeting.js)
+   SyncDrax â€” Meeting Orchestrator (meeting.js)
    ======================================================= */
 
 (async function () {
@@ -80,7 +80,7 @@
   let timerInterval = null;
   let layoutMode    = 'grid'; // 'grid' | 'spotlight'
 
-  // Auth — chat is only available to signed-in users
+  // Auth â€” chat is only available to signed-in users
   const IS_SIGNED_IN = !!localStorage.getItem('syncdrax_user');
 
   const AVATAR_COLORS = ['#7c3aed','#059669','#dc2626','#d97706','#0284c7','#db2777','#16a34a','#9333ea'];
@@ -195,7 +195,7 @@
     // Populate sidebar info
     sidebarRoomCode.textContent    = ROOM_CODE;
     sidebarRoomCodeCopy.textContent = ROOM_CODE;
-    topbarTitle.textContent        = `SyncDrax — ${ROOM_CODE}`;
+    topbarTitle.textContent        = `SyncDrax â€” ${ROOM_CODE}`;
     localNameEl.textContent        = displayName;
     localAvatar.textContent        = initials(displayName);
     localAvatar.style.background   = avatarColor(displayName);
@@ -282,7 +282,7 @@
     });
 
     rtc.connect(localStream).catch(() => {
-      chat.addSystemMessage('?? Could not connect to server — using local mode');
+      chat.addSystemMessage('?? Could not connect to server â€” using local mode');
     });
 
     updateGridLayout();

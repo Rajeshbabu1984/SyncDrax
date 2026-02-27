@@ -1,5 +1,5 @@
 /* =======================================================
-   SyncDrax — WebRTC Signaling & Peer Management
+   SyncDrax â€” WebRTC Signaling & Peer Management
    ======================================================= */
 
 const MAX_PARTICIPANTS = 30;
@@ -84,7 +84,7 @@ class SyncDraxRTC {
 
   _reconnect() {
     if (this._disconnecting) return;
-    console.log('[SyncDraxRTC] Reconnecting…');
+    console.log('[SyncDraxRTC] Reconnectingâ€¦');
     this.ws = new WebSocket(this.wsUrl);
     this.ws.onopen    = () => console.log('[SyncDraxRTC] Reconnected');
     this.ws.onmessage = (evt) => {
@@ -115,7 +115,7 @@ class SyncDraxRTC {
       }
 
       case 'peer_joined': {
-        // New peer — they'll send us an offer
+        // New peer â€” they'll send us an offer
         this.onPeerJoined(msg.peer_id, msg.name);
         this._updateParticipantList(msg.peer_id, msg.name, 'join');
         break;

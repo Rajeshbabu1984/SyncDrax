@@ -1,6 +1,6 @@
 /* =======================================================
-   SyncDrax — Virtual Backgrounds (MediaPipe Selfie Segmentation)
-   Real person segmentation — works like Zoom / Google Meet
+   SyncDrax â€” Virtual Backgrounds (MediaPipe Selfie Segmentation)
+   Real person segmentation â€” works like Zoom / Google Meet
    ======================================================= */
 
 const BACKGROUNDS = {
@@ -207,7 +207,7 @@ class BackgroundEngine {
       if (bg && bg.type === 'image') {
         const img = new Image();
         img.onload  = () => console.log(`[BG] Image loaded: ${bg.src}`);
-        img.onerror = () => console.error(`[BG] Image FAILED to load: ${bg.src} — make sure the file exists at frontend/images/`);
+        img.onerror = () => console.error(`[BG] Image FAILED to load: ${bg.src} â€” make sure the file exists at frontend/images/`);
         // resolve relative to the page (not the JS file)
         img.src = new URL(bg.src, window.location.href).href;
         this._imgCache[key] = img;
@@ -288,17 +288,17 @@ class BackgroundEngine {
         else          { sh = img.naturalWidth  / cr; sy = (img.naturalHeight - sh) / 2; }
         ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
       } else {
-        // Image not ready yet — draw a placeholder and wait
+        // Image not ready yet â€” draw a placeholder and wait
         ctx.fillStyle = '#1a2a1a';
         ctx.fillRect(0, 0, w, h);
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         ctx.font = `${14 * (w/640)}px sans-serif`;
         ctx.textAlign = 'center';
-        ctx.fillText('Loading background…', w / 2, h / 2);
+        ctx.fillText('Loading backgroundâ€¦', w / 2, h / 2);
         ctx.textAlign = 'left';
         // If image failed entirely, log it
         if (img && img.complete && !img.naturalWidth) {
-          console.error('[BG] Image load failed — check file is at frontend/images/bg-home.jpg');
+          console.error('[BG] Image load failed â€” check file is at frontend/images/bg-home.jpg');
         }
       }
     }

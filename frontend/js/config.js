@@ -1,5 +1,5 @@
 /* =======================================================
-   SyncDrax — Runtime Config
+   SyncDrax â€” Runtime Config
    Auto-detects dev (localhost) vs production (Render)
    ======================================================= */
 
