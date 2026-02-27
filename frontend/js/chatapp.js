@@ -245,6 +245,17 @@ function handleServerMsg(msg) {
       break;
     }
 
+    case 'message_deleted': {
+      const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+      if (el) {
+        const group = el.closest('.msg-group');
+        el.remove();
+        // Remove group if it has no more bubbles
+        if (group && !group.querySelector('.msg-bubble')) group.remove();
+      }
+      break;
+    }
+
     case 'pin_update': {
       const msgEl = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
       if (msgEl) {
@@ -433,10 +444,13 @@ function appendMessage(m, initial) {
   const activeChannel = activeType === 'channel' ? channels.find(c => c.id === activeId) : null;
   const canPin = activeType === 'dm' || !activeChannel || activeChannel.created_by === 0 || activeChannel.created_by === user.id;
 
+  const isSender = m.sender_id === user.id;
+
   inner += `<span class="msg-actions">
     <button class="react-btn" onclick="openReactionPicker(event,${m.id})" title="React">😊</button>
     ${canPin ? `<button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>` : ''}
     <button class="react-btn" onclick="openThreadById(${m.id})" title="Reply in thread">🧵</button>
+    ${isSender ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
   </span>`;
   inner += `<div class="reactions-row"></div>`;
   bubble.innerHTML = inner;
@@ -668,6 +682,15 @@ window.openReactionPicker = openReactionPicker;
 window.togglePin          = togglePin;
 window.openThreadById     = openThreadById;
 window.deleteChannel      = deleteChannel;
+window.deleteMessage      = deleteMessage;
+
+// ── Delete message ─────────────────────────────────────────────────────────
+async function deleteMessage(msgId) {
+  if (!confirm('Delete this message?')) return;
+  const res = await authFetch(`/chat/messages/${msgId}`, 'DELETE');
+  if (res.status === 403) { showToast('You can only delete your own messages'); return; }
+  if (!res.ok) { showToast('Could not delete message'); return; }
+}
 
 // ── Delete channel ────────────────────────────────────────────────────────────
 async function deleteChannel(e, channelId) {

@@ -650,7 +650,22 @@ async def delete_channel(
     return {"ok": True}
 
 
-# -- Pin / unpin a message --
+# -- Delete a message (sender only) --
+@app.delete("/chat/messages/{msg_id}")
+async def delete_message(
+    msg_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    cm = session.get(ChatMessage, msg_id)
+    if not cm:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if cm.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages")
+    session.delete(cm)
+    session.commit()
+    await _chat_broadcast({"type": "message_deleted", "message_id": msg_id})
+    return {"ok": True}
 @app.post("/chat/messages/{msg_id}/pin")
 async def toggle_pin(
     msg_id: int,
