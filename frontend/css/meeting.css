@@ -27,7 +27,8 @@
   grid-template-columns: 0 1fr var(--chat-w, 320px);
 }
 .meeting-room.sidebar-collapsed .sidebar {
-  display: none;
+  overflow: hidden;
+  min-width: 0;
 }
 .meeting-room.sidebar-collapsed .sidebar-resize-handle {
   display: none;
@@ -39,9 +40,11 @@
   border-right: 1px solid #2a2a2e;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   overflow-y: auto;
   padding-bottom: 16px;
   position: relative;
+  min-width: 0;
 }
 
 /* Sidebar resize handle */
