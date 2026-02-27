@@ -214,6 +214,7 @@
     localAvatar.textContent        = initials(displayName);
     localAvatar.style.background   = avatarColor(displayName);
     lobbyAvatar.textContent        = initials(displayName);
+    addSelfToSidebar();
 
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
@@ -383,8 +384,8 @@
     if (el) el.remove();
   }
 
-  // Add self to sidebar
-  (function addSelfToSidebar() {
+  // Add self to sidebar (called from enterMeeting after displayName is set)
+  function addSelfToSidebar() {
     const li = document.createElement('li');
     li.className = 'participant-item';
     const dot = document.createElement('span');
@@ -398,7 +399,7 @@
     nameEl.textContent = (displayName || 'You') + ' (you)';
     li.append(dot, av, nameEl);
     participantList.appendChild(li);
-  })();
+  }
 
   /* -------------------- TOOLBAR CONTROLS -------------------- */
 
