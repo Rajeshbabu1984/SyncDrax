@@ -36,6 +36,7 @@
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
+  left: var(--sidebar-w, 240px);
   width: 8px;
   height: 100%;
   cursor: col-resize;

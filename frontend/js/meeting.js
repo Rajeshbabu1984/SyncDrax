@@ -717,26 +717,12 @@
   (function initSidebarResize() {
     const handle = document.getElementById('sidebarResizeHandle');
     if (!handle) return;
-    const room    = meetingRoom;
-    const sidebar = document.querySelector('.sidebar');
-
-    function positionHandle() {
-      const roomRect    = room.getBoundingClientRect();
-      const sidebarRect = sidebar.getBoundingClientRect();
-      handle.style.left   = (sidebarRect.right - roomRect.left) + 'px';
-      handle.style.top    = '0';
-      handle.style.height = roomRect.height + 'px';
-    }
-
-    const observer = new MutationObserver(positionHandle);
-    observer.observe(room, { attributes: true, attributeFilter: ['class', 'style'] });
-    window.addEventListener('resize', positionHandle);
-    positionHandle();
+    const room = meetingRoom;
 
     handle.addEventListener('mousedown', (e) => {
       e.preventDefault();
       const startX = e.clientX;
-      const startW = sidebar.offsetWidth;
+      const startW = parseInt(getComputedStyle(room).getPropertyValue('--sidebar-w')) || 240;
       handle.classList.add('dragging');
       document.body.style.cursor     = 'col-resize';
       document.body.style.userSelect = 'none';
@@ -744,7 +730,6 @@
       function onMove(e) {
         const newW = Math.max(0, startW + (e.clientX - startX));
         room.style.setProperty('--sidebar-w', newW + 'px');
-        positionHandle();
       }
       function onUp() {
         handle.classList.remove('dragging');
@@ -768,13 +753,12 @@
     handle.addEventListener('mousedown', (e) => {
       e.preventDefault();
       const startX = e.clientX;
-      const startW = chatPanel.offsetWidth;
+      const startW = parseInt(getComputedStyle(room).getPropertyValue('--chat-w')) || 320;
       handle.classList.add('dragging');
       document.body.style.cursor     = 'col-resize';
       document.body.style.userSelect = 'none';
 
       function onMove(e) {
-        // dragging left = bigger chat, dragging right = smaller chat
         const newW = Math.max(0, startW - (e.clientX - startX));
         room.style.setProperty('--chat-w', newW + 'px');
       }
