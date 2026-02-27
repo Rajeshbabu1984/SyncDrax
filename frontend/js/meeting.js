@@ -713,6 +713,39 @@
       document.querySelector('.sidebar').style.display === 'none' ? '' : 'none';
   });
 
+  /* -------------------- SIDEBAR RESIZE -------------------- */
+  (function initSidebarResize() {
+    const handle = document.getElementById('sidebarResizeHandle');
+    if (!handle) return;
+    const room = meetingRoom;
+    let startX = 0;
+    let startW = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = document.querySelector('.sidebar').offsetWidth;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMove(e) {
+        const delta = e.clientX - startX;
+        const newW  = Math.min(420, Math.max(160, startW + delta));
+        room.style.setProperty('--sidebar-w', newW + 'px');
+      }
+      function onUp() {
+        handle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  })();
+
   /* -------------------- SPEAKING DETECTION (VAD) -------------------- */
   (function setupVAD() {
     if (!localStream) return;

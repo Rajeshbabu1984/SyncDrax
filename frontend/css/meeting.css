@@ -10,7 +10,7 @@
 /* ================== MEETING ROOM LAYOUT ================== */
 .meeting-room {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: var(--sidebar-w, 240px) 1fr;
   grid-template-rows: 1fr;
   height: 100vh;
   background: var(--bg-primary);
@@ -18,7 +18,7 @@
   overflow: hidden;
 }
 .meeting-room.chat-open {
-  grid-template-columns: 240px 1fr 320px;
+  grid-template-columns: var(--sidebar-w, 240px) 1fr 320px;
 }
 
 /* ================== SIDEBAR ================== */
@@ -29,6 +29,25 @@
   flex-direction: column;
   overflow-y: auto;
   padding-bottom: 16px;
+  position: relative;
+  min-width: 160px;
+  max-width: 420px;
+}
+
+/* Sidebar resize handle */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0; right: -3px;
+  width: 6px; height: 100%;
+  cursor: col-resize;
+  z-index: 50;
+  background: transparent;
+  transition: background 0.15s;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.dragging {
+  background: var(--purple);
+  opacity: 0.5;
 }
 .sidebar-header {
   display: flex;
