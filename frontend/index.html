@@ -229,10 +229,7 @@
       }
     }
 
-    // Run on load — redirect to chat if already signed in
-    if (getUser() && localStorage.getItem('synctact_token')) {
-      window.location.replace('chat.html');
-    }
+    // Run on load
     updateNav();
 
     /* -- Navigation -- */
