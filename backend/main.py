@@ -1030,6 +1030,7 @@ class SyncBotRequest(BaseModel):
     dm_to_user_id: Optional[int] = None
     content:       str
     bot_name:      str = "Volt"
+    volt_target:   str = "self"   # "self" = ephemeral (only requester) | "channel" = broadcast (owner only)
 
 
 @app.post("/chat/syncbot", status_code=201)
@@ -1038,24 +1039,59 @@ async def syncbot_message(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    cm = ChatMessage(
-        channel_id=body.channel_id,
-        dm_to_user_id=body.dm_to_user_id,
-        sender_id=0,
-        sender_name=body.bot_name,
-        content=body.content.strip(),
-        bot_name=body.bot_name,
-    )
-    session.add(cm)
-    session.commit()
-    session.refresh(cm)
-    d = _msg_dict(cm)
-    if cm.channel_id:
-        await _chat_broadcast({"type": "channel_message", "message": d})
-    elif cm.dm_to_user_id:
-        await _chat_send(cm.dm_to_user_id, {"type": "dm", "message": d})
-        await _chat_send(current_user.id, {"type": "dm", "message": d})
-    return d
+    # Determine actual delivery mode
+    target = body.volt_target if body.volt_target in ("self", "channel") else "self"
+
+    # Only the channel owner may broadcast Volt to the whole channel
+    if target == "channel" and body.channel_id:
+        ch = session.get(Channel, body.channel_id)
+        if not ch or ch.created_by != current_user.id:
+            target = "self"  # silently downgrade
+
+    if target == "channel":
+        # Save to DB so it appears in history for everyone
+        cm = ChatMessage(
+            channel_id=body.channel_id,
+            dm_to_user_id=body.dm_to_user_id,
+            sender_id=0,
+            sender_name=body.bot_name,
+            content=body.content.strip(),
+            bot_name=body.bot_name,
+        )
+        session.add(cm)
+        session.commit()
+        session.refresh(cm)
+        d = _msg_dict(cm)
+        if cm.channel_id:
+            await _chat_broadcast({"type": "channel_message", "message": d})
+        elif cm.dm_to_user_id:
+            await _chat_send(cm.dm_to_user_id, {"type": "dm", "message": d})
+            await _chat_send(current_user.id, {"type": "dm", "message": d})
+        return d
+    else:
+        # Ephemeral: only deliver to the requesting user, do NOT persist in DB
+        from datetime import datetime, timezone
+        d = {
+            "id":            None,
+            "channel_id":    body.channel_id,
+            "dm_to_user_id": body.dm_to_user_id,
+            "sender_id":     0,
+            "sender_name":   body.bot_name,
+            "content":       body.content.strip(),
+            "file_url":      None,
+            "file_name":     None,
+            "reactions":     {},
+            "pinned":        False,
+            "parent_id":     None,
+            "bot_name":      body.bot_name,
+            "ts":            datetime.now(timezone.utc).isoformat(),
+            "ephemeral":     True,
+        }
+        if body.channel_id:
+            await _chat_send(current_user.id, {"type": "channel_message", "message": d})
+        else:
+            await _chat_send(current_user.id, {"type": "dm", "message": d})
+        return d
 
 
 # -------------------------------------------------------------

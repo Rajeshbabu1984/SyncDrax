@@ -41,8 +41,19 @@ const emojiPickerEl  = document.getElementById('emojiPicker');
 const addChannelBtn  = document.getElementById('addChannelBtn');
 const addDmBtn       = document.getElementById('addDmBtn');
 const fileInput      = document.getElementById('fileInput');
+const voltTargetBtn  = document.getElementById('voltTargetBtn');
 
-// ── State ─────────────────────────────────────────────────────────────────────
+// ── Volt target helpers (per-channel: 'self' = private, 'channel' = broadcast) ─
+function getVoltTarget() {
+  if (activeType !== 'channel') return 'self';
+  return localStorage.getItem(`volt_ch_target_${activeId}`) || 'self';
+}
+function _updateVoltTargetBtn() {
+  if (!voltTargetBtn) return;
+  const t = getVoltTarget();
+  voltTargetBtn.textContent = t === 'channel' ? '\uD83D\uDCE2' : '\uD83D\uDD12';
+  voltTargetBtn.title = t === 'channel' ? 'Volt: visible to whole channel (click to make private)' : 'Volt: only visible to me (click to broadcast to channel)';
+}
 let ws            = null;
 let channels      = [];      // [{id, name, description, created_by}]
 let activeType    = null;    // 'channel' | 'dm'
@@ -118,6 +129,28 @@ async function initChat() {
   });
   addChannelBtn.addEventListener('click', openAddChannelModal);
   addDmBtn.addEventListener('click', openDmModal);
+  if (voltTargetBtn) {
+    voltTargetBtn.addEventListener('click', () => {
+      if (activeType !== 'channel') return;
+      const cur  = getVoltTarget();
+      const next = cur === 'self' ? 'channel' : 'self';
+      localStorage.setItem(`volt_ch_target_${activeId}`, next);
+      _updateVoltTargetBtn();
+      showToast(next === 'channel'
+        ? '\uD83D\uDCE2 Volt replies now visible to whole channel'
+        : '\uD83D\uDD12 Volt replies now private \u2014 only visible to you');
+    });
+  }
+  if (voltTargetBtn) {
+    voltTargetBtn.addEventListener('click', () => {
+      if (activeType !== 'channel') return;
+      const cur = getVoltTarget();
+      const next = cur === 'self' ? 'channel' : 'self';
+      localStorage.setItem(`volt_ch_target_${activeId}`, next);
+      _updateVoltTargetBtn();
+      showToast(next === 'channel' ? '\uD83D\uDCE2 Volt replies now visible to whole channel' : '\uD83D\uDD12 Volt replies now private (only you)');
+    });
+  }
   document.getElementById('openBotsBtn').addEventListener('click', openBotsModal);
   document.getElementById('openBotsBtn').addEventListener('click', openBotsModal);
   document.getElementById('cancelChannelBtn').addEventListener('click', closeAddChannelModal);
@@ -406,6 +439,12 @@ async function openChannel(ch) {
   msgInput.placeholder   = `Message ${ch.name}`;
   messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:20px 0;">Loading…</div>';
   renderChannelList();
+  // Show Volt target toggle only for channel owner
+  if (voltTargetBtn) {
+    const isOwner = ch.created_by === user?.id;
+    voltTargetBtn.style.display = isOwner ? '' : 'none';
+    if (isOwner) _updateVoltTargetBtn();
+  }
   await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id)]);
   // 1-second auto-refresh for pinned badge (instant fallback if WS misses an event)
   clearInterval(_pinnedPollTimer);
@@ -454,6 +493,7 @@ async function openDm(uid, name) {
   // Stop pinned poll and hide pinned bar (DMs don't have pinned)
   clearInterval(_pinnedPollTimer);
   _pinnedPollTimer = null;
+  if (voltTargetBtn) voltTargetBtn.style.display = 'none';
   const badge = document.getElementById('pinnedBadge');
   const bar   = document.getElementById('pinnedBar');
   badge.classList.add('hidden');
@@ -511,9 +551,10 @@ function appendMessage(m, initial) {
     group.dataset.botName  = thisBotName;
     group.dataset.ts       = thisTsMs;
     const botBadge = m.bot_name ? `<span class="bot-badge">BOT</span>` : '';
+    const ephemeralNote = m.ephemeral ? `<span style="font-size:.7rem;color:var(--text-muted);margin-left:6px;font-style:italic;">\uD83D\uDC41\uFE0F Only visible to you</span>` : '';
     group.innerHTML = `
       <div class="msg-header">
-        <span class="msg-name">${esc(m.sender_name)}${botBadge}</span>
+        <span class="msg-name">${esc(m.sender_name)}${botBadge}${ephemeralNote}</span>
         <span class="msg-time">${formatTime(m.ts)}</span>
       </div>`;
     wrap.appendChild(group);
@@ -549,16 +590,21 @@ function appendMessage(m, initial) {
   const isSender = m.sender_id === user.id;
   if (isSender) bubble.dataset.senderSelf = '1';
 
-  inner += `<span class="msg-actions">
+  // Ephemeral messages have no DB id — skip interactive actions
+  if (m.id !== null && m.id !== undefined) {
+    inner += `<span class="msg-actions">
     <button class="react-btn" onclick="openReactionPicker(event,${m.id})" title="React">😊</button>
     ${canPin ? `<button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>` : ''}
     <button class="react-btn" onclick="openThreadById(${m.id})" title="Reply in thread">🧵</button>
     ${isSender ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
   </span>`;
+  }
   inner += `<div class="reactions-row"></div>`;
   bubble.innerHTML = inner;
 
-  buildReactionRow(bubble.querySelector('.reactions-row'), m.id, m.reactions || {});
+  if (m.id !== null && m.id !== undefined) {
+    buildReactionRow(bubble.querySelector('.reactions-row'), m.id, m.reactions || {});
+  }
   group.appendChild(bubble);
 }
 
@@ -665,9 +711,24 @@ function slashSelectDelta(delta) {
 }
 
 async function _postVolt(content) {
-  const body = { content, bot_name: 'Volt' };
+  const target = getVoltTarget();
+  const body = { content, bot_name: 'Volt', volt_target: target };
   if (activeType === 'channel') body.channel_id    = activeId;
   else                          body.dm_to_user_id = activeId;
+
+  if (target === 'self' && activeType === 'channel') {
+    // Ephemeral: show locally only, no server round-trip needed
+    const fakeMsg = {
+      id: null, channel_id: activeId, dm_to_user_id: null,
+      sender_id: 0, sender_name: 'Volt', content, bot_name: 'Volt',
+      file_url: null, file_name: null, reactions: {}, pinned: false,
+      parent_id: null, ts: new Date().toISOString(), ephemeral: true,
+    };
+    appendMessage(fakeMsg, false);
+    scrollToBottom();
+    return;
+  }
+  // DM or channel-wide: go through server
   await authFetch('/chat/syncbot', 'POST', body);
 }
 
@@ -736,10 +797,23 @@ async function executeSlashCommand(text) {
       const d = await r.json();
       const url = d?.data?.[0]?.images?.fixed_height?.url;
       if (!url) { showToast('No GIF found'); return; }
-      const payload = { content: `🎞️ ${query}`, file_url: url, file_name: `${query}.gif` };
-      if (activeType === 'channel') { payload.type = 'channel_message'; payload.channel_id = activeId; }
-      else                          { payload.type = 'dm'; payload.to_user_id = activeId; }
-      wsSend(payload);
+      const target = getVoltTarget();
+      if (target === 'self' && activeType === 'channel') {
+        // Ephemeral: show locally only, not saved or broadcast
+        const fakeMsg = {
+          id: null, channel_id: activeId, dm_to_user_id: null,
+          sender_id: 0, sender_name: 'Volt', content: `🎞️ ${query}`,
+          bot_name: 'Volt', file_url: url, file_name: `${query}.gif`,
+          reactions: {}, pinned: false, parent_id: null,
+          ts: new Date().toISOString(), ephemeral: true,
+        };
+        appendMessage(fakeMsg, false); scrollToBottom();
+      } else {
+        const payload = { content: `🎞️ ${query}`, file_url: url, file_name: `${query}.gif` };
+        if (activeType === 'channel') { payload.type = 'channel_message'; payload.channel_id = activeId; }
+        else                          { payload.type = 'dm'; payload.to_user_id = activeId; }
+        wsSend(payload);
+      }
     } catch { showToast('Giphy error'); }
     return;
   }
