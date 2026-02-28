@@ -1306,6 +1306,8 @@ function openBotsModal() {
   document.getElementById('botsOverlay').classList.remove('hidden');
   buildAvatarPickerModal();
   fetchBots();
+  fetchTasks();
+  _populateTaskChannelSelect();
 }
 
 window.closeBotsModal = function() {
@@ -1388,6 +1390,103 @@ window.copyBotWebhook = function(url, btn) {
     btn.textContent = 'Copied!';
     setTimeout(() => btn.textContent = 'Copy', 2000);
   }).catch(() => showToast('Copy failed'));
+};
+
+// -----------------------------------------------------------------
+// Recurring Tasks
+// -----------------------------------------------------------------
+let tasksData = [];
+
+function _populateTaskChannelSelect() {
+  const sel = document.getElementById('taskChannelSelect');
+  if (!sel) return;
+  sel.innerHTML = '';
+  channels.forEach(ch => {
+    const opt = document.createElement('option');
+    opt.value = ch.id;
+    opt.textContent = ch.name;
+    sel.appendChild(opt);
+  });
+}
+
+async function fetchTasks() {
+  const el = document.getElementById('taskListModal');
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;">Loading…</div>';
+  const res = await authFetch('/tasks');
+  if (!res.ok) { el.innerHTML = '<div style="color:#e55;font-size:.82rem;">Failed to load tasks.</div>'; return; }
+  tasksData = await res.json();
+  renderTasks();
+}
+
+function renderTasks() {
+  const el = document.getElementById('taskListModal');
+  if (!tasksData.length) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:4px 0;">No recurring tasks yet — add one below.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  tasksData.forEach(t => {
+    const chName = channels.find(c => c.id === t.channel_id)?.name || `#${t.channel_id}`;
+    const interval = t.interval_minutes >= 1440
+      ? `every ${t.interval_minutes / 1440}d`
+      : t.interval_minutes >= 60
+        ? `every ${t.interval_minutes / 60}h`
+        : `every ${t.interval_minutes}m`;
+    const lastRun = t.last_run ? new Date(t.last_run).toLocaleString() : 'never';
+    const item = document.createElement('div');
+    item.className = 'bot-item';
+    item.style.cssText = 'align-items:flex-start;gap:10px;';
+    item.innerHTML = `
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:.85rem;color:var(--text-primary);word-break:break-word;margin-bottom:3px;">${esc(t.message)}</div>
+        <div style="font-size:.75rem;color:var(--text-muted);">${esc(chName)} &middot; ${interval} &middot; last: ${lastRun}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="modal-btn ${t.active ? 'primary' : 'secondary'}" style="padding:5px 10px;font-size:.78rem;"
+          onclick="toggleTask(${t.id},this)">${t.active ? 'On' : 'Off'}</button>
+        <button class="del-bot-btn" onclick="deleteTask(${t.id})">Remove</button>
+      </div>`;
+    el.appendChild(item);
+  });
+}
+
+window.createTask = async function() {
+  const msg      = document.getElementById('taskMsgInput').value.trim();
+  const chanId   = parseInt(document.getElementById('taskChannelSelect').value);
+  const interval = parseInt(document.getElementById('taskIntervalInput').value) || 1;
+  const unit     = parseInt(document.getElementById('taskIntervalUnit').value);
+  if (!msg) { showToast('Enter a message'); return; }
+  if (!chanId) { showToast('Select a channel'); return; }
+  const res = await authFetch('/tasks', 'POST', {
+    message: msg,
+    channel_id: chanId,
+    interval_minutes: interval * unit,
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.detail || 'Failed to create task'); return; }
+  const task = await res.json();
+  tasksData.push(task);
+  renderTasks();
+  document.getElementById('taskMsgInput').value = '';
+  document.getElementById('taskIntervalInput').value = '60';
+  document.getElementById('taskIntervalUnit').value = '60';
+  showToast('✅ Recurring task created!');
+};
+
+window.deleteTask = async function(id) {
+  if (!confirm('Delete this recurring task?')) return;
+  const res = await authFetch(`/tasks/${id}`, 'DELETE');
+  if (!res.ok) { showToast('Delete failed'); return; }
+  tasksData = tasksData.filter(t => t.id !== id);
+  renderTasks();
+  showToast('Task deleted');
+};
+
+window.toggleTask = async function(id, btn) {
+  const res = await authFetch(`/tasks/${id}/toggle`, 'PATCH');
+  if (!res.ok) { showToast('Toggle failed'); return; }
+  const updated = await res.json();
+  tasksData = tasksData.map(t => t.id === id ? updated : t);
+  renderTasks();
 };
 
 if (!user || !token) {

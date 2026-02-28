@@ -603,6 +603,30 @@
   -d '{"content": "Build passed ✅", "channel_id": 1}'</pre>
     </div>
 
+    <hr class="bots-divider" />
+
+    <!-- Recurring Tasks -->
+    <div class="bots-section-title">⏰ Recurring Tasks</div>
+    <div id="taskListModal"><div style="color:var(--text-muted);font-size:.85rem;">Loading…</div></div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-start;">
+      <textarea id="taskMsgInput" class="modal-input" placeholder="Message Volt will post automatically…" rows="2"
+        style="flex:1;min-width:160px;resize:vertical;font-family:inherit;padding:8px;"></textarea>
+      <div style="display:flex;flex-direction:column;gap:8px;min-width:170px;">
+        <select id="taskChannelSelect" class="modal-input" style="padding:8px;"></select>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input id="taskIntervalInput" type="number" min="1" max="10080" class="modal-input"
+            placeholder="Every" style="width:72px;padding:8px;" value="60" />
+          <select id="taskIntervalUnit" class="modal-input" style="flex:1;padding:8px;">
+            <option value="1">minutes</option>
+            <option value="60" selected>hours</option>
+            <option value="1440">days</option>
+          </select>
+        </div>
+        <button class="modal-btn primary" onclick="createTask()" style="padding:9px 14px;">➕ Add Task</button>
+      </div>
+    </div>
+
     <div class="modal-row" style="margin-top:20px;">
       <button class="modal-btn secondary" onclick="closeBotsModal()">Close</button>
     </div>

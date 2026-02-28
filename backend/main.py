@@ -137,6 +137,17 @@ class Bot(SQLModel, table=True):
     created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class RecurringTask(SQLModel, table=True):
+    id:               Optional[int]      = Field(default=None, primary_key=True)
+    owner_id:         int
+    channel_id:       Optional[int]      = Field(default=None)
+    message:          str
+    interval_minutes: int                = Field(default=60)   # how often to post
+    last_run:         Optional[datetime] = Field(default=None) # last time it fired
+    active:           bool               = Field(default=True)
+    created_at:       datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 def create_db_tables():
     SQLModel.metadata.create_all(engine)
 
@@ -275,12 +286,13 @@ import asyncio as _asyncio
 
 
 async def _run_scheduler():
-    """Background task: deliver scheduled messages when send_at is reached."""
+    """Background task: deliver scheduled messages + fire recurring tasks."""
     while True:
         await _asyncio.sleep(20)
         try:
             now = datetime.now(timezone.utc)
             with Session(engine) as sess:
+                # -- One-time scheduled messages --
                 pending = sess.exec(
                     select(ScheduledMessage).where(
                         ScheduledMessage.sent == False,  # noqa: E712
@@ -304,6 +316,32 @@ async def _run_scheduler():
                         p = {"type": "dm", "message": _msg_dict(cm)}
                         await _chat_send(cm.dm_to_user_id, p)
                         await _chat_send(cm.sender_id, p)
+
+                # -- Recurring tasks (Volt auto-posts) --
+                rt_all = sess.exec(
+                    select(RecurringTask).where(RecurringTask.active == True)  # noqa: E712
+                ).all()
+                for rt in rt_all:
+                    if rt.last_run is None:
+                        due = True
+                    else:
+                        elapsed = (now - rt.last_run.replace(tzinfo=timezone.utc)).total_seconds() / 60
+                        due = elapsed >= rt.interval_minutes
+                    if due:
+                        cm = ChatMessage(
+                            channel_id=rt.channel_id,
+                            sender_id=0,
+                            sender_name="Volt",
+                            content=rt.message,
+                            bot_name="Volt",
+                        )
+                        sess.add(cm)
+                        rt.last_run = now
+                        sess.add(rt)
+                        sess.commit()
+                        sess.refresh(cm)
+                        if cm.channel_id:
+                            await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
         except Exception as exc:
             log.warning("Scheduler error: %s", exc)
 
@@ -567,6 +605,18 @@ def _msg_dict(m: ChatMessage) -> dict:
         "parent_id":     m.parent_id,
         "bot_name":      m.bot_name,
         "ts":            m.created_at.isoformat(),
+    }
+
+
+def _task_dict(t: RecurringTask) -> dict:
+    return {
+        "id":               t.id,
+        "channel_id":       t.channel_id,
+        "message":          t.message,
+        "interval_minutes": t.interval_minutes,
+        "last_run":         t.last_run.isoformat() if t.last_run else None,
+        "active":           t.active,
+        "created_at":       t.created_at.isoformat(),
     }
 
 
@@ -1065,6 +1115,72 @@ async def bot_webhook(
     if cm.channel_id:
         await _chat_broadcast({"type": "channel_message", "message": d})
     return d
+
+
+# -------------------------------------------------------------
+# Recurring Tasks
+# -------------------------------------------------------------
+class CreateTaskRequest(BaseModel):
+    channel_id:       Optional[int] = None
+    message:          str
+    interval_minutes: int           = 60   # minimum 1 minute
+
+
+@app.get("/tasks")
+def list_tasks(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    tasks = session.exec(
+        select(RecurringTask).where(RecurringTask.owner_id == current_user.id)
+        .order_by(RecurringTask.created_at)
+    ).all()
+    return [_task_dict(t) for t in tasks]
+
+
+@app.post("/tasks", status_code=201)
+def create_task(
+    body: CreateTaskRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not body.message.strip():
+        raise HTTPException(400, "message required")
+    t = RecurringTask(
+        owner_id=current_user.id,
+        channel_id=body.channel_id,
+        message=body.message.strip(),
+        interval_minutes=max(1, body.interval_minutes),
+    )
+    session.add(t); session.commit(); session.refresh(t)
+    return _task_dict(t)
+
+
+@app.delete("/tasks/{task_id}")
+def delete_task(
+    task_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    t = session.get(RecurringTask, task_id)
+    if not t or t.owner_id != current_user.id:
+        raise HTTPException(404, "Task not found")
+    session.delete(t); session.commit()
+    return {"ok": True}
+
+
+@app.patch("/tasks/{task_id}/toggle")
+def toggle_task(
+    task_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    t = session.get(RecurringTask, task_id)
+    if not t or t.owner_id != current_user.id:
+        raise HTTPException(404, "Task not found")
+    t.active = not t.active
+    session.add(t); session.commit()
+    return _task_dict(t)
 
 
 # -------------------------------------------------------------
