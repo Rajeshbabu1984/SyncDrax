@@ -407,12 +407,12 @@ async function openChannel(ch) {
   messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:20px 0;">Loading…</div>';
   renderChannelList();
   await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id)]);
-  // Start 5-second auto-refresh for pinned badge (reliable even if WS misses an event)
+  // 1-second auto-refresh for pinned badge (instant fallback if WS misses an event)
   clearInterval(_pinnedPollTimer);
   _pinnedPollTimer = setInterval(() => {
     if (activeType === 'channel' && activeId === ch.id) loadPinnedMessages(ch.id);
     else clearInterval(_pinnedPollTimer);
-  }, 5000);
+  }, 1000);
 }
 
 // ── DMs ───────────────────────────────────────────────────────────────────────
