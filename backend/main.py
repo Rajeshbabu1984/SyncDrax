@@ -40,7 +40,7 @@ load_dotenv()
 # -------------------------------------------------------------
 # Config
 # -------------------------------------------------------------
-SECRET_KEY        = os.getenv("SECRET_KEY", "synctact-dev-secret-change-in-production")
+SECRET_KEY        = os.getenv("SECRET_KEY", "syncdrax-dev-secret-change-in-production")
 ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
 ADMIN_KEY         = os.getenv("ADMIN_KEY", "synctact-admin-2026")
