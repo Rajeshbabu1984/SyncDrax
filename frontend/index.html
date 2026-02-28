@@ -194,6 +194,7 @@
     function saveUser(u, token) {
       localStorage.setItem('synctact_user', JSON.stringify(u));
       if (token) localStorage.setItem('synctact_token', token);
+      localStorage.setItem('synctact_auth_v', '3'); // always stamp version on save
     }
     function signOut()  {
       localStorage.removeItem('synctact_user');
@@ -228,7 +229,10 @@
       }
     }
 
-    // Run on load
+    // Run on load — redirect to chat if already signed in
+    if (getUser() && localStorage.getItem('synctact_token')) {
+      window.location.replace('chat.html');
+    }
     updateNav();
 
     /* -- Navigation -- */
@@ -292,8 +296,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Sign in failed');
         saveUser(data.user, data.token);
-        document.getElementById('authModal').classList.add('hidden');
-        updateNav();
+        window.location.href = 'chat.html';
       } catch (err) {
         alert(err.message);
       } finally {
@@ -319,8 +322,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Sign up failed');
         saveUser(data.user, data.token);
-        document.getElementById('authModal').classList.add('hidden');
-        updateNav();
+        window.location.href = 'chat.html';
       } catch (err) {
         alert(err.message);
       } finally {
