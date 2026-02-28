@@ -90,10 +90,24 @@ async function initChat() {
   // Event listeners
   sendBtn.addEventListener('click', sendMessage);
   msgInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    const dropdownOpen = !slashDropdownEl.classList.contains('hidden');
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (dropdownOpen) {
+        // Select active item — fill command into input, keep focus
+        const active = slashDropdownEl.querySelector('.slash-cmd-item.active');
+        if (active) {
+          const cmdName = active.querySelector('.slash-cmd-name').textContent;
+          msgInput.value = cmdName + ' ';
+          msgInput.dispatchEvent(new Event('input'));  // re-filter dropdown
+        }
+        return;  // don't send yet
+      }
+      sendMessage();
+    }
     if (e.key === 'Escape') hideSlashDropdown();
-    if (e.key === 'ArrowDown') { slashSelectDelta(1); e.preventDefault(); }
-    if (e.key === 'ArrowUp')   { slashSelectDelta(-1); e.preventDefault(); }
+    if (e.key === 'ArrowDown') { if (dropdownOpen) { slashSelectDelta(1); e.preventDefault(); } }
+    if (e.key === 'ArrowUp')   { if (dropdownOpen) { slashSelectDelta(-1); e.preventDefault(); } }
     sendTyping();
   });
   msgInput.addEventListener('input', () => {
@@ -711,6 +725,9 @@ async function executeSlashCommand(text) {
     } catch { showToast('Weather fetch failed'); }
     return;
   }
+
+  // Bare '/' with nothing after — just keep dropdown visible, do nothing
+  if (cmd === '/') return;
 
   showToast(`Unknown command: ${cmd}`);
 }
