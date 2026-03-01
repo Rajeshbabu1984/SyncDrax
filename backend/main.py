@@ -70,15 +70,17 @@ class User(SQLModel, table=True):
     name:           str            = Field(index=False)
     email:          str            = Field(index=True, unique=True)
     hashed_password: str
+    banned:         bool           = Field(default=False)
     created_at:     datetime       = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Channel(SQLModel, table=True):
-    id:          Optional[int] = Field(default=None, primary_key=True)
-    name:        str           = Field(index=True)   # e.g. "?? general"
-    description: Optional[str] = None
-    created_by:  int           = Field(default=0)
-    created_at:  datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+    id:               Optional[int] = Field(default=None, primary_key=True)
+    name:             str           = Field(index=True)
+    description:      Optional[str] = None
+    created_by:       int           = Field(default=0)
+    slowmode_seconds: int           = Field(default=0)
+    created_at:       datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ChatMessage(SQLModel, table=True):
@@ -151,6 +153,44 @@ class RecurringTask(SQLModel, table=True):
     created_at:       datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+# ── Moderation models ─────────────────────────────────────────────────────────
+
+class MutedUser(SQLModel, table=True):
+    id:          Optional[int]      = Field(default=None, primary_key=True)
+    user_id:     int                = Field(index=True)
+    channel_id:  Optional[int]      = Field(default=None)  # None = all channels
+    muted_until: Optional[datetime] = Field(default=None)  # None = permanent
+    muted_by:    int
+    created_at:  datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class KickedUser(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    user_id:    int           = Field(index=True)
+    channel_id: int
+    kicked_by:  int
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class BadWord(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    word:       str           = Field(index=True)
+    added_by:   int
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AuditLog(SQLModel, table=True):
+    id:               Optional[int] = Field(default=None, primary_key=True)
+    action:           str
+    actor_id:         int
+    actor_name:       str
+    target_user_id:   Optional[int] = Field(default=None)
+    target_user_name: Optional[str] = Field(default=None)
+    channel_id:       Optional[int] = Field(default=None)
+    detail:           Optional[str] = Field(default=None)
+    created_at:       datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 def create_db_tables():
     SQLModel.metadata.create_all(engine)
 
@@ -177,6 +217,14 @@ def migrate_db():
                 conn.execute(sqlalchemy.text('ALTER TABLE recurringtask ADD COLUMN shell_cmd VARCHAR DEFAULT NULL'))
             if 'url_target' not in existing:
                 conn.execute(sqlalchemy.text("ALTER TABLE recurringtask ADD COLUMN url_target VARCHAR DEFAULT 'self'"))
+        if 'user' in tables:
+            existing = {c['name'] for c in insp.get_columns('user')}
+            if 'banned' not in existing:
+                conn.execute(sqlalchemy.text('ALTER TABLE user ADD COLUMN banned BOOLEAN DEFAULT FALSE'))
+        if 'channel' in tables:
+            existing = {c['name'] for c in insp.get_columns('channel')}
+            if 'slowmode_seconds' not in existing:
+                conn.execute(sqlalchemy.text('ALTER TABLE channel ADD COLUMN slowmode_seconds INTEGER DEFAULT 0'))
 
 
 def get_session():
@@ -263,11 +311,48 @@ app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 # Chat WebSocket connections: { user_id: WebSocket }
 chat_connections: Dict[int, WebSocket] = {}
 
+# Slowmode tracking: { (user_id, channel_id): last_message_unix_timestamp }
+_slowmode_last: Dict[tuple, float] = {}
+
+# Bad words cache (reloaded from DB on startup and on change)
+_bad_words_cache: set = set()
+
+def _reload_bad_words():
+    global _bad_words_cache
+    with Session(engine) as s:
+        _bad_words_cache = {bw.word.lower() for bw in s.exec(select(BadWord)).all()}
+
+def _filter_bad_words(text: str) -> str:
+    """Replace bad words with asterisks."""
+    if not _bad_words_cache:
+        return text
+    words = text.split()
+    result = []
+    for w in words:
+        clean = w.lower().strip(".,!?;:'\"")
+        if clean in _bad_words_cache:
+            result.append('*' * len(w))
+        else:
+            result.append(w)
+    return ' '.join(result)
+
+def _log_audit(session: Session, action: str, actor_id: int, actor_name: str,
+               target_user_id: int = None, target_user_name: str = None,
+               channel_id: int = None, detail: str = None):
+    entry = AuditLog(
+        action=action, actor_id=actor_id, actor_name=actor_name,
+        target_user_id=target_user_id, target_user_name=target_user_name,
+        channel_id=channel_id, detail=detail,
+    )
+    session.add(entry)
+    session.commit()
+
 
 @app.on_event("startup")
 def on_startup():
     create_db_tables()
     migrate_db()
+    _reload_bad_words()
     log.info("Database ready at %s", DATABASE_URL)
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
@@ -695,7 +780,8 @@ def list_channels(
     session: Session = Depends(get_session),
 ):
     channels = session.exec(select(Channel).order_by(Channel.created_at)).all()
-    return [{"id": c.id, "name": c.name, "description": c.description, "created_by": c.created_by} for c in channels]
+    return [{"id": c.id, "name": c.name, "description": c.description,
+             "created_by": c.created_by, "slowmode_seconds": c.slowmode_seconds or 0} for c in channels]
 
 
 @app.post("/chat/channels", status_code=201)
@@ -711,7 +797,8 @@ def create_channel(
     session.add(ch)
     session.commit()
     session.refresh(ch)
-    return {"id": ch.id, "name": ch.name, "description": ch.description, "created_by": ch.created_by}
+    return {"id": ch.id, "name": ch.name, "description": ch.description,
+            "created_by": ch.created_by, "slowmode_seconds": 0}
 
 
 @app.get("/chat/channels/{channel_id}/messages")
@@ -815,6 +902,8 @@ async def delete_message(
     # Bot messages (sender_id=0) can be deleted by anyone; regular messages by sender only
     if cm.sender_id != 0 and cm.sender_id != current_user.id:
         raise HTTPException(status_code=403, detail="You can only delete your own messages")
+    _log_audit(session, "delete_message", current_user.id, current_user.name,
+               channel_id=cm.channel_id, detail=cm.content[:200] if cm.content else None)
     session.delete(cm)
     session.commit()
     await _chat_broadcast({"type": "message_deleted", "message_id": msg_id})
@@ -1021,6 +1110,264 @@ def get_channel_polls(
         .order_by(Poll.created_at.desc()).limit(20)
     ).all()
     return [_poll_dict(p, session) for p in polls]
+
+
+# -------------------------------------------------------------
+# Moderation
+# -------------------------------------------------------------
+import time as _time_mod
+
+class MuteRequest(BaseModel):
+    user_id:    int
+    channel_id: Optional[int] = None  # None = all channels
+    minutes:    Optional[int] = None  # None = permanent
+
+class BadWordRequest(BaseModel):
+    word: str
+
+class SlowmodeRequest(BaseModel):
+    seconds: int  # 0 = disabled
+
+@app.post("/mod/mute")
+async def mute_user(
+    body: MuteRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    target = session.get(User, body.user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    # Check permission: channel owner if channel_id given, else admin key required
+    if body.channel_id:
+        ch = session.get(Channel, body.channel_id)
+        if not ch or (ch.created_by != 0 and ch.created_by != current_user.id):
+            raise HTTPException(403, "Only the channel owner can mute in this channel")
+    muted_until = None
+    if body.minutes:
+        muted_until = datetime.now(timezone.utc) + timedelta(minutes=body.minutes)
+    # Remove existing mute for same scope first
+    existing = session.exec(
+        select(MutedUser).where(MutedUser.user_id == body.user_id, MutedUser.channel_id == body.channel_id)
+    ).first()
+    if existing:
+        session.delete(existing)
+    mu = MutedUser(user_id=body.user_id, channel_id=body.channel_id,
+                   muted_until=muted_until, muted_by=current_user.id)
+    session.add(mu); session.commit()
+    _log_audit(session, "mute_user", current_user.id, current_user.name,
+               target.id, target.name, body.channel_id,
+               f"duration={'permanent' if not body.minutes else str(body.minutes)+'m'}")
+    await _chat_send(body.user_id, {"type": "moderation", "action": "muted",
+                                    "channel_id": body.channel_id,
+                                    "until": muted_until.isoformat() if muted_until else None,
+                                    "by": current_user.name})
+    return {"ok": True}
+
+
+@app.delete("/mod/mute/{user_id}")
+def unmute_user(
+    user_id: int,
+    channel_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    stmt = select(MutedUser).where(MutedUser.user_id == user_id)
+    if channel_id is not None:
+        stmt = stmt.where(MutedUser.channel_id == channel_id)
+    existing = session.exec(stmt).all()
+    for m in existing:
+        session.delete(m)
+    session.commit()
+    return {"ok": True}
+
+
+@app.post("/mod/kick/{user_id}/{channel_id}")
+async def kick_user(
+    user_id: int,
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    ch = session.get(Channel, channel_id)
+    if not ch or (ch.created_by != 0 and ch.created_by != current_user.id):
+        raise HTTPException(403, "Only the channel owner can kick users")
+    existing = session.exec(
+        select(KickedUser).where(KickedUser.user_id == user_id, KickedUser.channel_id == channel_id)
+    ).first()
+    if not existing:
+        ku = KickedUser(user_id=user_id, channel_id=channel_id, kicked_by=current_user.id)
+        session.add(ku); session.commit()
+    _log_audit(session, "kick_user", current_user.id, current_user.name,
+               target.id, target.name, channel_id)
+    await _chat_send(user_id, {"type": "moderation", "action": "kicked",
+                                "channel_id": channel_id, "by": current_user.name})
+    return {"ok": True}
+
+
+@app.delete("/mod/kick/{user_id}/{channel_id}")
+def unkick_user(
+    user_id: int,
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    existing = session.exec(
+        select(KickedUser).where(KickedUser.user_id == user_id, KickedUser.channel_id == channel_id)
+    ).first()
+    if existing:
+        session.delete(existing); session.commit()
+    return {"ok": True}
+
+
+@app.post("/mod/ban/{user_id}")
+async def ban_user(
+    user_id: int,
+    x_admin_key: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    from fastapi import Header
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    target.banned = True
+    session.add(target); session.commit()
+    _log_audit(session, "ban_user", current_user.id, current_user.name, target.id, target.name)
+    # Force disconnect banned user
+    await _chat_send(user_id, {"type": "moderation", "action": "banned", "by": current_user.name})
+    ws = chat_connections.get(user_id)
+    if ws:
+        try: await ws.close()
+        except: pass
+    return {"ok": True}
+
+
+@app.delete("/mod/ban/{user_id}")
+def unban_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    target = session.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    target.banned = False
+    session.add(target); session.commit()
+    return {"ok": True}
+
+
+@app.patch("/chat/channels/{channel_id}/slowmode")
+async def set_slowmode(
+    channel_id: int,
+    body: SlowmodeRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ch = session.get(Channel, channel_id)
+    if not ch:
+        raise HTTPException(404, "Channel not found")
+    if ch.created_by != 0 and ch.created_by != current_user.id:
+        raise HTTPException(403, "Only the channel owner can set slowmode")
+    ch.slowmode_seconds = max(0, min(body.seconds, 3600))
+    session.add(ch); session.commit()
+    await _chat_broadcast({"type": "slowmode_update", "channel_id": channel_id,
+                           "seconds": ch.slowmode_seconds})
+    return {"ok": True, "seconds": ch.slowmode_seconds}
+
+
+@app.get("/mod/badwords")
+def list_bad_words(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    return [{"id": bw.id, "word": bw.word} for bw in session.exec(select(BadWord)).all()]
+
+
+@app.post("/mod/badwords", status_code=201)
+def add_bad_word(
+    body: BadWordRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    w = body.word.strip().lower()
+    if not w:
+        raise HTTPException(400, "Word required")
+    existing = session.exec(select(BadWord).where(BadWord.word == w)).first()
+    if existing:
+        return {"id": existing.id, "word": existing.word}
+    bw = BadWord(word=w, added_by=current_user.id)
+    session.add(bw); session.commit(); session.refresh(bw)
+    _reload_bad_words()
+    return {"id": bw.id, "word": bw.word}
+
+
+@app.delete("/mod/badwords/{word_id}")
+def remove_bad_word(
+    word_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    bw = session.get(BadWord, word_id)
+    if not bw:
+        raise HTTPException(404, "Not found")
+    session.delete(bw); session.commit()
+    _reload_bad_words()
+    return {"ok": True}
+
+
+@app.get("/mod/audit")
+def get_audit_log(
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    logs = session.exec(
+        select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
+    ).all()
+    return [{"id": l.id, "action": l.action, "actor": l.actor_name,
+             "target": l.target_user_name, "channel_id": l.channel_id,
+             "detail": l.detail, "ts": l.created_at.isoformat()} for l in logs]
+
+
+@app.get("/mod/muted")
+def list_muted(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    muted = session.exec(select(MutedUser)).all()
+    result = []
+    for m in muted:
+        u = session.get(User, m.user_id)
+        result.append({"id": m.id, "user_id": m.user_id, "user_name": u.name if u else "?",
+                       "channel_id": m.channel_id,
+                       "muted_until": m.muted_until.isoformat() if m.muted_until else None})
+    return result
+
+
+@app.get("/mod/kicked")
+def list_kicked(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    kicked = session.exec(select(KickedUser)).all()
+    result = []
+    for k in kicked:
+        u = session.get(User, k.user_id)
+        result.append({"id": k.id, "user_id": k.user_id, "user_name": u.name if u else "?",
+                       "channel_id": k.channel_id})
+    return result
+
+
+@app.get("/mod/banned")
+def list_banned(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    users = session.exec(select(User).where(User.banned == True)).all()  # noqa: E712
+    return [{"id": u.id, "name": u.name, "email": u.email} for u in users]
 
 
 # -------------------------------------------------------------
@@ -1316,6 +1663,11 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
     with Session(engine) as session:
         db_user = session.get(User, user_id)
         uname   = db_user.name if db_user else f"User{user_id}"
+        # Reject banned users
+        if db_user and db_user.banned:
+            await ws.send_text(json.dumps({"type": "moderation", "action": "banned", "by": "system"}))
+            await ws.close(code=4003)
+            return
 
     await _chat_broadcast({"type": "presence", "user_id": user_id, "online": True}, exclude_uid=user_id)
 
@@ -1334,6 +1686,44 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                 if not content and not file_url:
                     continue
                 with Session(engine) as session:
+                    # Kick check
+                    kicked = session.exec(
+                        select(KickedUser).where(KickedUser.user_id == user_id,
+                                                  KickedUser.channel_id == channel_id)
+                    ).first()
+                    if kicked:
+                        await ws.send_text(json.dumps({"type": "error", "message": "You have been removed from this channel."}))
+                        continue
+                    # Mute check
+                    now_utc = datetime.now(timezone.utc)
+                    mute = session.exec(
+                        select(MutedUser).where(
+                            MutedUser.user_id == user_id,
+                            (MutedUser.channel_id == channel_id) | (MutedUser.channel_id == None)  # noqa: E711
+                        )
+                    ).first()
+                    if mute:
+                        if mute.muted_until is None or mute.muted_until.replace(tzinfo=timezone.utc) > now_utc:
+                            await ws.send_text(json.dumps({"type": "error", "message": "You are muted in this channel."}))
+                            continue
+                        else:
+                            # Mute expired — clean up
+                            session.delete(mute); session.commit()
+                    # Slowmode check
+                    ch = session.get(Channel, channel_id)
+                    if ch and ch.slowmode_seconds > 0:
+                        key = (user_id, channel_id)
+                        last = _slowmode_last.get(key, 0)
+                        elapsed = _time_mod.time() - last
+                        if elapsed < ch.slowmode_seconds:
+                            wait = int(ch.slowmode_seconds - elapsed) + 1
+                            await ws.send_text(json.dumps({"type": "error",
+                                "message": f"Slowmode: please wait {wait}s before sending again."}))
+                            continue
+                        _slowmode_last[key] = _time_mod.time()
+                    # Bad words filter
+                    if content:
+                        content = _filter_bad_words(content)
                     cm = ChatMessage(
                         channel_id=channel_id, sender_id=user_id, sender_name=uname,
                         content=content, file_url=file_url, file_name=file_name,

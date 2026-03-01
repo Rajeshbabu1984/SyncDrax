@@ -146,7 +146,27 @@
     }
     .search-bar input:focus { border-color: var(--purple); }
 
-    /* -- Table -- */
+    /* -- Tabs -- */
+    .admin-tabs { display:flex; gap:4px; margin-bottom:24px; border-bottom:1px solid var(--border); padding-bottom:0; }
+    .admin-tab { background:none; border:none; cursor:pointer; padding:9px 18px; font-size:.88rem; font-weight:600; color:var(--text-muted); border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .15s,border-color .15s; font-family:inherit; border-radius:6px 6px 0 0; }
+    .admin-tab.active { color:var(--purple-light); border-bottom-color:var(--purple); }
+    .admin-tab:hover { color:var(--text-primary); }
+    /* -- Moderation section -- */
+    .mod-section { margin-bottom:36px; }
+    .mod-section h3 { font-size:1rem; font-weight:800; color:var(--text-bright); margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+    .mod-row { display:flex; gap:10px; margin-bottom:12px; }
+    .mod-row input { flex:1; background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius); color:var(--text-primary); padding:9px 14px; font-size:.88rem; font-family:inherit; outline:none; }
+    .mod-row input:focus { border-color:var(--purple); }
+    .mod-chip { display:inline-flex; align-items:center; gap:6px; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.25); color:#f87171; padding:4px 10px; border-radius:999px; font-size:.8rem; margin:3px; }
+    .mod-chip button { background:none; border:none; cursor:pointer; color:#f87171; font-size:.85rem; padding:0; line-height:1; }
+    .audit-entry { padding:8px 14px; font-size:.8rem; border-bottom:1px solid var(--border); color:var(--text-muted); display:flex; gap:10px; }
+    .audit-entry .audit-action { color:var(--text-primary); font-weight:600; min-width:80px; }
+    .audit-entry .audit-time { min-width:130px; color:var(--text-muted); }
+    .mod-user-row { display:flex; align-items:center; justify-content:space-between; padding:9px 14px; border-bottom:1px solid var(--border); font-size:.85rem; }
+    .mod-user-row:last-child { border-bottom:none; }
+    .mod-user-row .mod-user-info { display:flex; flex-direction:column; gap:2px; }
+    .mod-user-row .mod-user-name { font-weight:700; color:var(--text-primary); }
+    .mod-user-row .mod-user-meta { font-size:.75rem; color:var(--text-muted); }
     .users-table-wrap {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
@@ -365,7 +385,7 @@
       <div class="panel-header">
         <div class="panel-title-group">
           <div class="panel-badge"><i class="fa-solid fa-shield-halved"></i> Admin</div>
-          <div class="panel-title">User Management</div>
+          <div class="panel-title">Control Panel</div>
         </div>
         <div class="panel-actions">
           <div class="user-count-pill">Total users: <span id="userCount">—</span></div>
@@ -378,27 +398,84 @@
         </div>
       </div>
 
-      <div class="search-bar">
-        <i class="fa-solid fa-magnifying-glass"></i>
-        <input type="text" id="searchInput" placeholder="Search by name or email…"/>
+      <!-- Tabs -->
+      <div class="admin-tabs">
+        <button class="admin-tab active" data-tab="users"><i class="fa-solid fa-users"></i> Users</button>
+        <button class="admin-tab" data-tab="mod"><i class="fa-solid fa-gavel"></i> Moderation</button>
       </div>
 
-      <div class="users-table-wrap">
-        <table class="users-table">
-          <thead>
-            <tr>
-              <th>User</th>
-              <th>Email</th>
-              <th>Joined</th>
-              <th style="text-align:center">Action</th>
-            </tr>
-          </thead>
-          <tbody id="usersTableBody">
-            <tr><td colspan="4" class="table-state">
-              <i class="fa-solid fa-spinner fa-spin"></i>Loading users…
-            </td></tr>
-          </tbody>
-        </table>
+      <!-- Users section -->
+      <div id="usersSection">
+        <div class="search-bar">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="searchInput" placeholder="Search by name or email…"/>
+        </div>
+        <div class="users-table-wrap">
+          <table class="users-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Joined</th>
+                <th style="text-align:center">Action</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody">
+              <tr><td colspan="4" class="table-state">
+                <i class="fa-solid fa-spinner fa-spin"></i>Loading users…
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Moderation section -->
+      <div id="modSection" style="display:none">
+
+        <!-- Bad Words -->
+        <div class="mod-section">
+          <h3><i class="fa-solid fa-ban"></i> Bad Words Filter</h3>
+          <div class="mod-row">
+            <input type="text" id="badWordInput" placeholder="Add word or phrase…" />
+            <button class="btn btn-primary" id="addBadWordBtn" style="white-space:nowrap">
+              <i class="fa-solid fa-plus"></i> Add
+            </button>
+          </div>
+          <div id="badWordsList" class="users-table-wrap" style="padding:12px 14px;min-height:48px;"><em style="color:var(--text-muted);font-size:.82rem">Loading…</em></div>
+        </div>
+
+        <!-- Audit Log -->
+        <div class="mod-section">
+          <h3><i class="fa-solid fa-scroll"></i> Audit Log <small style="font-weight:400;font-size:.75rem;color:var(--text-muted)">(last 100)</small></h3>
+          <div class="users-table-wrap" id="auditLogList" style="max-height:280px;overflow-y:auto">
+            <em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>
+          </div>
+        </div>
+
+        <!-- Banned Users -->
+        <div class="mod-section">
+          <h3><i class="fa-solid fa-user-slash"></i> Banned Users</h3>
+          <div class="users-table-wrap" id="bannedList">
+            <em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>
+          </div>
+        </div>
+
+        <!-- Muted Users -->
+        <div class="mod-section">
+          <h3><i class="fa-solid fa-microphone-slash"></i> Muted Users</h3>
+          <div class="users-table-wrap" id="mutedList">
+            <em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>
+          </div>
+        </div>
+
+        <!-- Kicked Users -->
+        <div class="mod-section">
+          <h3><i class="fa-solid fa-person-walking-arrow-right"></i> Kicked Users</h3>
+          <div class="users-table-wrap" id="kickedList">
+            <em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -566,7 +643,156 @@
     });
 
     /* -- Refresh -- */
-    document.getElementById('refreshBtn').addEventListener('click', loadUsers);
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      const activeTab = document.querySelector('.admin-tab.active')?.dataset.tab;
+      if (activeTab === 'mod') loadModData();
+      else loadUsers();
+    });
+
+    /* -- Tabs -- */
+    document.querySelectorAll('.admin-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.dataset.tab;
+        document.getElementById('usersSection').style.display = tab === 'users' ? '' : 'none';
+        document.getElementById('modSection').style.display   = tab === 'mod'   ? '' : 'none';
+        if (tab === 'mod') loadModData();
+      });
+    });
+
+    /* -- Moderation -- */
+    async function modFetch(path, method = 'GET', body = null) {
+      const opts = { method, headers: { 'x-admin-key': adminKey } };
+      if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      return fetch(`${API}${path}`, opts);
+    }
+
+    async function loadModData() {
+      loadBadWords(); loadAuditLog(); loadBannedUsers(); loadMutedUsers(); loadKickedUsers();
+    }
+
+    /* -- Bad Words -- */
+    async function loadBadWords() {
+      const el = document.getElementById('badWordsList');
+      el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem">Loading…</em>';
+      try {
+        const res = await modFetch('/mod/badwords');
+        if (!res.ok) throw new Error();
+        const words = await res.json();
+        if (!words.length) { el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:4px 0">No bad words configured.</em>'; return; }
+        el.innerHTML = words.map(w =>
+          `<span class="mod-chip">${escHtml(w.word)}<button onclick="removeBadWord(${w.id})" title="Remove">×</button></span>`
+        ).join('');
+      } catch { el.innerHTML = '<em style="color:#f87171;font-size:.82rem">Failed to load.</em>'; }
+    }
+
+    window.removeBadWord = async function(id) {
+      const res = await modFetch(`/mod/badwords/${id}`, 'DELETE');
+      if (res.ok) loadBadWords();
+      else toast('Failed to remove word', 'error');
+    };
+
+    document.getElementById('addBadWordBtn').addEventListener('click', async () => {
+      const input = document.getElementById('badWordInput');
+      const word  = input.value.trim();
+      if (!word) return;
+      const res = await modFetch('/mod/badwords', 'POST', { word });
+      if (res.ok) { input.value = ''; loadBadWords(); }
+      else toast('Failed to add word', 'error');
+    });
+    document.getElementById('badWordInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('addBadWordBtn').click();
+    });
+
+    /* -- Audit Log -- */
+    async function loadAuditLog() {
+      const el = document.getElementById('auditLogList');
+      el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>';
+      try {
+        const res = await modFetch('/mod/audit');
+        if (!res.ok) throw new Error();
+        const logs = await res.json();
+        if (!logs.length) { el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">No audit entries.</em>'; return; }
+        el.innerHTML = logs.map(l => {
+          const t = new Date(l.created_at).toLocaleString();
+          const detail = l.detail ? ` — ${escHtml(l.detail)}` : '';
+          return `<div class="audit-entry"><span class="audit-time">${t}</span><span class="audit-action">${escHtml(l.action)}</span><span>by <strong>${escHtml(l.actor_name||'—')}</strong>${l.target_user_name ? ` on <strong>${escHtml(l.target_user_name)}</strong>` : ''}${detail}</span></div>`;
+        }).join('');
+      } catch { el.innerHTML = '<em style="color:#f87171;font-size:.82rem;padding:12px 14px;display:block">Failed to load.</em>'; }
+    }
+
+    /* -- Banned Users -- */
+    async function loadBannedUsers() {
+      const el = document.getElementById('bannedList');
+      el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>';
+      try {
+        const res = await modFetch('/mod/banned');
+        if (!res.ok) throw new Error();
+        const users = await res.json();
+        if (!users.length) { el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">No banned users.</em>'; return; }
+        el.innerHTML = users.map(u => `
+          <div class="mod-user-row">
+            <div class="mod-user-info"><span class="mod-user-name">${escHtml(u.name)}</span><span class="mod-user-meta">ID #${u.id} · ${escHtml(u.email)}</span></div>
+            <button class="btn btn-ghost" style="font-size:.78rem;padding:5px 12px" onclick="unbanUser(${u.id})"><i class="fa-solid fa-unlock"></i> Unban</button>
+          </div>`).join('');
+      } catch { el.innerHTML = '<em style="color:#f87171;font-size:.82rem;padding:12px 14px;display:block">Failed to load.</em>'; }
+    }
+
+    window.unbanUser = async function(uid) {
+      const res = await modFetch(`/mod/ban/${uid}`, 'DELETE');
+      if (res.ok) { loadBannedUsers(); toast('User unbanned'); }
+      else toast('Unban failed', 'error');
+    };
+
+    /* -- Muted Users -- */
+    async function loadMutedUsers() {
+      const el = document.getElementById('mutedList');
+      el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>';
+      try {
+        const res = await modFetch('/mod/muted');
+        if (!res.ok) throw new Error();
+        const rows = await res.json();
+        if (!rows.length) { el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">No muted users.</em>'; return; }
+        el.innerHTML = rows.map(r => {
+          const until = r.muted_until ? `until ${new Date(r.muted_until).toLocaleString()}` : 'Permanent';
+          const ch    = r.channel_id   ? `Channel ${r.channel_id}` : 'All channels';
+          return `<div class="mod-user-row">
+            <div class="mod-user-info"><span class="mod-user-name">User #${r.user_id}</span><span class="mod-user-meta">${ch} · ${until}</span></div>
+            <button class="btn btn-ghost" style="font-size:.78rem;padding:5px 12px" onclick="unmuteUser(${r.user_id})"><i class="fa-solid fa-microphone"></i> Unmute</button>
+          </div>`;
+        }).join('');
+      } catch { el.innerHTML = '<em style="color:#f87171;font-size:.82rem;padding:12px 14px;display:block">Failed to load.</em>'; }
+    }
+
+    window.unmuteUser = async function(uid) {
+      const res = await modFetch(`/mod/mute/${uid}`, 'DELETE');
+      if (res.ok) { loadMutedUsers(); toast('User unmuted'); }
+      else toast('Unmute failed', 'error');
+    };
+
+    /* -- Kicked Users -- */
+    async function loadKickedUsers() {
+      const el = document.getElementById('kickedList');
+      el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">Loading…</em>';
+      try {
+        const res = await modFetch('/mod/kicked');
+        if (!res.ok) throw new Error();
+        const rows = await res.json();
+        if (!rows.length) { el.innerHTML = '<em style="color:var(--text-muted);font-size:.82rem;padding:12px 14px;display:block">No kicked users.</em>'; return; }
+        el.innerHTML = rows.map(r => `
+          <div class="mod-user-row">
+            <div class="mod-user-info"><span class="mod-user-name">User #${r.user_id}</span><span class="mod-user-meta">Channel ${r.channel_id} · Kicked by ${r.kicked_by}</span></div>
+            <button class="btn btn-ghost" style="font-size:.78rem;padding:5px 12px" onclick="unkickUser(${r.user_id},${r.channel_id})"><i class="fa-solid fa-person-walking-arrow-right"></i> Unkick</button>
+          </div>`).join('');
+      } catch { el.innerHTML = '<em style="color:#f87171;font-size:.82rem;padding:12px 14px;display:block">Failed to load.</em>'; }
+    }
+
+    window.unkickUser = async function(uid, cid) {
+      const res = await modFetch(`/mod/kick/${uid}/${cid}`, 'DELETE');
+      if (res.ok) { loadKickedUsers(); toast('User unkicked'); }
+      else toast('Unkick failed', 'error');
+    };
 
     /* -- Confirm dialog -- */
     document.getElementById('confirmCancelBtn').addEventListener('click', () => {

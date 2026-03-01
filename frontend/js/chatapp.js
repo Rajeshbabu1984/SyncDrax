@@ -388,6 +388,38 @@ function handleServerMsg(msg) {
       if (card) updatePollCard(card, msg.poll);
       break;
     }
+
+    case 'error': {
+      showToast(msg.message || 'Error', 'error');
+      break;
+    }
+
+    case 'slowmode_update': {
+      const ch = channels.find(c => c.id === msg.channel_id);
+      if (ch) ch.slowmode_seconds = msg.seconds;
+      if (activeType === 'channel' && activeId === msg.channel_id) {
+        _updateSlowmodeBar(msg.seconds);
+      }
+      break;
+    }
+
+    case 'moderation': {
+      const action = msg.action;
+      if (action === 'banned') {
+        showToast('You have been banned from SyncTact.', 'error');
+        setTimeout(() => { localStorage.removeItem('synctact_token'); localStorage.removeItem('synctact_user'); window.location.href = 'index.html'; }, 2000);
+      } else if (action === 'kicked') {
+        showToast(`You were removed from this channel by ${msg.by}.`, 'error');
+        if (activeType === 'channel' && activeId === msg.channel_id) {
+          messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:40px;text-align:center;">You have been removed from this channel.</div>';
+          activeId = null;
+        }
+      } else if (action === 'muted') {
+        const untilStr = msg.until ? ` until ${new Date(msg.until).toLocaleTimeString()}` : ' permanently';
+        showToast(`You have been muted${untilStr} by ${msg.by}.`, 'error');
+      }
+      break;
+    }
   }
 }
 
@@ -434,6 +466,7 @@ async function openChannel(ch) {
     _updateVoltTargetBtn();
   }
   await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id)]);
+  _updateSlowmodeBar(ch.slowmode_seconds || 0);
   // 1-second auto-refresh for pinned badge (instant fallback if WS misses an event)
   clearInterval(_pinnedPollTimer);
   _pinnedPollTimer = setInterval(() => {
@@ -586,6 +619,7 @@ function appendMessage(m, initial) {
     ${canPin ? `<button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>` : ''}
     <button class="react-btn" onclick="openThreadById(${m.id})" title="Reply in thread">🧵</button>
     ${canDelete ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
+    ${(activeChannel && activeChannel.created_by === user.id && !isSender && !m.bot_name) ? `<button class="mod-btn" onclick="kickUser(${m.sender_id},${m.channel_id})" title="Kick from channel">🥢</button><button class="mod-btn" onclick="muteUser(${m.sender_id},${m.channel_id})" title="Mute in channel">🔇</button>` : ''}
   </span>`;
   }
   inner += `<div class="reactions-row"></div>`;
@@ -994,11 +1028,51 @@ function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function showToast(msg) {
+function showToast(msg, type = '') {
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+  t.className = 'toast show' + (type === 'error' ? ' error' : '');
+  setTimeout(() => { t.classList.remove('show'); }, 3000);
+}
+
+// ── Slowmode bar ──────────────────────────────────────────────────────────────
+let _slowmodeTimer = null;
+function _updateSlowmodeBar(seconds) {
+  const bar = document.getElementById('slowmodeBar');
+  const cd  = document.getElementById('slowmodeCountdown');
+  if (!bar) return;
+  clearInterval(_slowmodeTimer);
+  if (!seconds) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  if (cd) cd.textContent = `${seconds} second${seconds !== 1 ? 's' : ''} between messages`;
+}
+
+// ── Moderation actions ───────────────────────────────────────────────────────
+async function muteUser(userId, channelId) {
+  const mins = prompt('Mute duration in minutes (leave blank for permanent):');
+  if (mins === null) return; // cancelled
+  const body = { user_id: userId, channel_id: channelId };
+  if (mins && !isNaN(parseInt(mins))) body.minutes = parseInt(mins);
+  const res = await authFetch('/mod/mute', 'POST', body);
+  if (res.ok) {
+    const data = await res.json().catch(() => ({}));
+    showToast(data.detail || 'User muted');
+  } else {
+    const e = await res.json().catch(() => ({}));
+    showToast(e.detail || 'Mute failed', 'error');
+  }
+}
+
+async function kickUser(userId, channelId) {
+  if (!confirm('Kick this user from the channel?')) return;
+  const res = await authFetch(`/mod/kick/${userId}/${channelId}`, 'POST');
+  if (res.ok) {
+    const data = await res.json().catch(() => ({}));
+    showToast(data.detail || 'User kicked');
+  } else {
+    const e = await res.json().catch(() => ({}));
+    showToast(e.detail || 'Kick failed', 'error');
+  }
 }
 
 // Expose globally for inline onclick
@@ -1007,6 +1081,8 @@ window.togglePin          = togglePin;
 window.openThreadById     = openThreadById;
 window.deleteChannel      = deleteChannel;
 window.deleteMessage      = deleteMessage;
+window.muteUser           = muteUser;
+window.kickUser           = kickUser;
 
 // ── Delete message ─────────────────────────────────────────────────────────
 async function deleteMessage(msgId) {
