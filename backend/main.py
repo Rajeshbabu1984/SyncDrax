@@ -812,7 +812,13 @@ async def delete_message(
     cm = session.get(ChatMessage, msg_id)
     if not cm:
         raise HTTPException(status_code=404, detail="Message not found")
-    if cm.sender_id != current_user.id:
+    # Allow deletion by: the original sender, OR a channel owner deleting a bot message
+    is_sender = cm.sender_id == current_user.id
+    is_channel_owner = False
+    if cm.channel_id:
+        ch = session.get(Channel, cm.channel_id)
+        is_channel_owner = ch is not None and ch.created_by == current_user.id
+    if not is_sender and not (is_channel_owner and cm.bot_name):
         raise HTTPException(status_code=403, detail="You can only delete your own messages")
     session.delete(cm)
     session.commit()

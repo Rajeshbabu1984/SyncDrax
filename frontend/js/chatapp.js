@@ -576,6 +576,7 @@ function appendMessage(m, initial) {
   const canPin = activeType === 'dm' || !activeChannel || activeChannel.created_by === 0 || activeChannel.created_by === user.id;
 
   const isSender = m.sender_id === user.id;
+  const canDelete = isSender || (m.bot_name && canPin); // channel owners can delete bot messages
   if (isSender) bubble.dataset.senderSelf = '1';
 
   // Ephemeral messages have no DB id — skip interactive actions
@@ -584,7 +585,7 @@ function appendMessage(m, initial) {
     <button class="react-btn" onclick="openReactionPicker(event,${m.id})" title="React">😊</button>
     ${canPin ? `<button class="react-btn pin-msg-btn" onclick="togglePin(${m.id})" title="${m.pinned ? 'Unpin' : 'Pin'}"${m.pinned ? ' style="color:var(--purple-l)"' : ''}>📌</button>` : ''}
     <button class="react-btn" onclick="openThreadById(${m.id})" title="Reply in thread">🧵</button>
-    ${isSender ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
+    ${canDelete ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
   </span>`;
   }
   inner += `<div class="reactions-row"></div>`;
