@@ -74,6 +74,10 @@ let pendingForwardId = null;  // message id to forward
 let mentionUsers     = [];    // filtered mention candidates
 let mentionActiveIdx = 0;
 let myProfile        = null;  // {id, name, avatar_url, status, bio}
+let notifPrefs       = {};    // {channel_id: {muted: bool}}
+let voiceRecorder    = null;  // MediaRecorder instance
+let voiceChunks      = [];
+let voiceTimerInterval = null;
 
 const CHANNEL_EMOJIS = [
   '💬','📣','🔥','🎉','🛠️','📢','🌍','🎵','🚀','💡','🎯','🧠',
@@ -221,6 +225,10 @@ async function initChat() {
   initInviteHandlers();
   initForwardHandlers();
   initCategoryHandlers();
+  loadNotifPrefs();
+  initMuteHandler();
+  initGalleryHandlers();
+  initVoiceHandlers();
 
   // @mention dropdown keyboard nav
   document.getElementById('mentionDropdown').addEventListener('mousedown', e => {
@@ -269,6 +277,13 @@ function handleServerMsg(msg) {
       // Desktop notification for Volt automated messages
       if (m.bot_name === 'Volt') {
         maybePushNotif('\u26a1 Volt', m.content || 'Automated message');
+      }
+      // @mention desktop notification for this user
+      if (m.sender_id !== user.id && m.content && user.name) {
+        const isMuted = notifPrefs[m.channel_id]?.muted;
+        if (!isMuted && m.content.toLowerCase().includes('@' + user.name.toLowerCase())) {
+          maybePushNotif(`\uD83D\uDD14 ${m.sender_name} mentioned you`, m.content.slice(0, 100));
+        }
       }
       break;
     }
@@ -505,6 +520,16 @@ async function openChannel(ch) {
   // Show invite button for channel owners or system channels
   const inviteBtn = document.getElementById('inviteBtn');
   if (inviteBtn) inviteBtn.style.display = '';
+  // Show gallery and mute buttons
+  const galleryBtn = document.getElementById('galleryBtn');
+  if (galleryBtn) galleryBtn.style.display = '';
+  const muteBtn = document.getElementById('muteChannelBtn');
+  if (muteBtn) {
+    muteBtn.style.display = '';
+    const isMuted = notifPrefs[ch.id]?.muted;
+    muteBtn.textContent = isMuted ? '🔕' : '🔔';
+    muteBtn.title = isMuted ? 'Unmute notifications' : 'Mute notifications for this channel';
+  }
   // Always show Volt toggle in channels (server enforces ownership on broadcast)
   if (voltTargetBtn) {
     voltTargetBtn.style.display = '';
@@ -660,9 +685,16 @@ function appendMessage(m, initial) {
   if (m.edited)  inner += `<span class="edited-label">(edited)</span>`;
   if (m.file_url) {
     const fullUrl   = API + m.file_url;
-    const isImage   = /\.(png|jpg|jpeg|gif|webp)$/i.test(m.file_url);
-    if (isImage) {
+    const isImage   = /\.(png|jpg|jpeg|gif|webp|svg|bmp|avif)$/i.test(m.file_url);
+    const isVideo   = /\.(mp4|webm|mov)$/i.test(m.file_url);
+    const isAudio   = /\.(mp3|ogg|wav|m4a|webm)$/i.test(m.file_url) && !isVideo;
+    const isVoiceMsg = /voice-\d+\.webm$/i.test(m.file_url);
+    if (isVoiceMsg || isAudio) {
+      inner += `<div class="voice-bubble"><audio src="${fullUrl}" controls preload="metadata"></audio></div>`;
+    } else if (isImage) {
       inner += `<a href="${fullUrl}" target="_blank"><img class="msg-img" src="${fullUrl}" alt="${esc(m.file_name||'image')}" /></a>`;
+    } else if (isVideo) {
+      inner += `<video class="msg-img" src="${fullUrl}" controls preload="metadata" style="max-width:100%;border-radius:8px;"></video>`;
     } else {
       inner += `<a class="msg-file" href="${fullUrl}" target="_blank" download="${esc(m.file_name||'file')}"><i class="fa-solid fa-file"></i>${esc(m.file_name||'file')}</a>`;
     }
@@ -695,6 +727,8 @@ function appendMessage(m, initial) {
     buildReactionRow(bubble.querySelector('.reactions-row'), m.id, m.reactions || {});
   }
   group.appendChild(bubble);
+  // Async link preview for message text
+  if (m.content && !m.bot_name) fetchLinkPreviews(bubble, m.content);
 }
 
 function buildReactionRow(rowEl, msgId, reactions) {
@@ -757,6 +791,10 @@ const SLASH_COMMANDS = [
   { cmd: '/remind',  icon: '⏰', desc: '/remind 10m Your reminder text' },
   { cmd: '/giphy',   icon: '🎞️', desc: '/giphy search term — post a GIF' },
   { cmd: '/weather', icon: '🌤️', desc: '/weather city — current weather' },
+  { cmd: '/8ball',   icon: '🎱', desc: '/8ball question — magic 8-ball answer' },
+  { cmd: '/trivia',  icon: '🧠', desc: '/trivia — get a random trivia question' },
+  { cmd: '/news',    icon: '📰', desc: '/news topic — latest news summary' },
+  { cmd: '/gallery', icon: '🖼️', desc: '/gallery — open image gallery for this channel' },
 ];
 
 let slashActiveIdx = 0;
@@ -915,6 +953,57 @@ async function executeSlashCommand(text) {
       if (!text2 || r.status !== 200) { showToast('Weather unavailable'); return; }
       await _postVolt(`🌤️ ${text2.trim()}`);
     } catch { showToast('Weather fetch failed'); }
+    return;
+  }
+
+  if (cmd === '/8ball') {
+    const answers = [
+      'It is certain.','It is decidedly so.','Without a doubt.','Yes, definitely.',
+      'You may rely on it.','As I see it, yes.','Most likely.','Outlook good.',
+      'Yes.','Signs point to yes.','Reply hazy, try again.','Ask again later.',
+      'Better not tell you now.','Cannot predict now.','Concentrate and ask again.',
+      "Don't count on it.",'My reply is no.','My sources say no.',
+      'Outlook not so good.','Very doubtful.',
+    ];
+    const q = parts.slice(1).join(' ') || '…';
+    const a = answers[Math.floor(Math.random() * answers.length)];
+    await _postVolt(`🎱 *${q}*\n> ${a}`);
+    return;
+  }
+
+  if (cmd === '/trivia') {
+    try {
+      const r = await fetch('https://opentdb.com/api.php?amount=1&type=multiple');
+      const d = await r.json();
+      const q = d?.results?.[0];
+      if (!q) { showToast('Trivia unavailable'); return; }
+      const all = [...q.incorrect_answers, q.correct_answer].sort(() => Math.random() - 0.5);
+      const letters = ['A','B','C','D'];
+      const opts = all.map((o,i) => `${letters[i]}. ${o}`).join('\n');
+      const clean = (s) => s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#039;/g,"'");
+      await _postVolt(`🧠 **Trivia** (${clean(q.category)})\n${clean(q.question)}\n\n${opts}\n\n||Answer: ${clean(q.correct_answer)}||`);
+    } catch { showToast('Trivia fetch failed'); }
+    return;
+  }
+
+  if (cmd === '/news') {
+    const topic = parts.slice(1).join(' ') || 'technology';
+    try {
+      const r = await fetch(`https://api.currentsapi.services/v1/search?keywords=${encodeURIComponent(topic)}&language=en&apiKey=demo`);
+      const d = await r.json();
+      const articles = d?.news?.slice(0, 3);
+      if (!articles?.length) {
+        await _postVolt(`📰 No news found for "${topic}". Try a different topic.`);
+        return;
+      }
+      const lines = articles.map(a => `• [${a.title}](${a.url})`).join('\n');
+      await _postVolt(`📰 **News: ${topic}**\n${lines}`);
+    } catch { showToast('News fetch failed'); }
+    return;
+  }
+
+  if (cmd === '/gallery') {
+    openGalleryPanel();
     return;
   }
 
@@ -1606,6 +1695,187 @@ window.openProfileModal    = openProfileModal;
 window.bookmarkMessage     = bookmarkMessage;
 window.openForwardModal    = openForwardModal;
 window.startEditMessage    = startEditMessage;
+window.openGalleryPanel    = openGalleryPanel;
+
+// ── Link previews ──────────────────────────────────────────────────────────────
+const _previewCache = {};  // url → data (simple cache)
+const URL_REGEX = /https?:\/\/[^\s"'<>()]+/gi;
+
+async function fetchLinkPreviews(bubble, content) {
+  const urls = content.match(URL_REGEX);
+  if (!urls || !urls.length) return;
+  const url = urls[0];  // preview only the first URL per message
+  if (_previewCache[url] === null) return;  // known failure, skip
+  try {
+    const data = _previewCache[url] || await (async () => {
+      const r = await authFetch(`/link-preview?url=${encodeURIComponent(url)}`);
+      if (!r.ok) return null;
+      const d = await r.json();
+      _previewCache[url] = d;
+      return d;
+    })();
+    if (!data || !data.title) return;
+    const imgHtml = data.image ? `<img src="${esc(data.image)}" alt="" onerror="this.style.display='none'" />` : '';
+    const siteHtml = data.site ? `<span class="lp-site">${esc(data.site)}</span>` : '';
+    const descHtml = data.description ? `<p class="lp-desc">${esc(data.description)}</p>` : '';
+    const preview = document.createElement('div');
+    preview.className = 'link-preview';
+    preview.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${imgHtml}<div class="lp-text">${siteHtml}<span class="lp-title">${esc(data.title)}</span>${descHtml}</div></a>`;
+    bubble.appendChild(preview);
+  } catch { _previewCache[url] = null; }
+}
+
+// ── Notification preferences (per-channel mute) ────────────────────────────────
+async function loadNotifPrefs() {
+  try {
+    const r = await authFetch('/notifications/prefs');
+    if (r.ok) notifPrefs = await r.json();
+  } catch { /* ignore */ }
+}
+
+async function toggleChannelMute(channelId) {
+  const isMuted = notifPrefs[channelId]?.muted;
+  const newVal  = !isMuted;
+  const r = await authFetch(`/notifications/prefs/${channelId}?muted=${newVal}`, 'PUT');
+  if (!r.ok) { showToast('Could not update notification preference'); return; }
+  notifPrefs[channelId] = { muted: newVal };
+  const btn = document.getElementById('muteChannelBtn');
+  if (btn) {
+    btn.textContent = newVal ? '🔕' : '🔔';
+    btn.title = newVal ? 'Unmute notifications' : 'Mute notifications for this channel';
+  }
+  showToast(newVal ? '🔕 Channel muted' : '🔔 Channel unmuted');
+}
+
+function initMuteHandler() {
+  document.getElementById('muteChannelBtn')?.addEventListener('click', () => {
+    if (activeType === 'channel') toggleChannelMute(activeId);
+  });
+}
+
+// ── Image Gallery ─────────────────────────────────────────────────────────────
+const VIDEO_EXTS   = /\.(mp4|webm|mov)$/i;
+const IMAGE_EXTS_R = /\.(png|jpg|jpeg|gif|webp|svg|bmp|avif)$/i;
+
+function initGalleryHandlers() {
+  document.getElementById('galleryBtn')?.addEventListener('click', openGalleryPanel);
+  document.getElementById('closeGalleryBtn')?.addEventListener('click', () => {
+    document.getElementById('galleryPanel')?.classList.add('hidden');
+  });
+}
+
+async function openGalleryPanel() {
+  if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+  const panel = document.getElementById('galleryPanel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  const body = document.getElementById('galleryPanelBody');
+  body.innerHTML = '<div class="gallery-empty">Loading…</div>';
+  const r = await authFetch(`/chat/channels/${activeId}/gallery`);
+  if (!r.ok) { body.innerHTML = '<div class="gallery-empty">Could not load gallery</div>'; return; }
+  const items = await r.json();
+  if (!items.length) { body.innerHTML = '<div class="gallery-empty">No media in this channel yet.</div>'; return; }
+  body.innerHTML = '';
+  items.forEach(item => {
+    const fullUrl = API + item.file_url;
+    const el = document.createElement('div');
+    el.className = 'gallery-item';
+    el.title = `${item.sender} • ${item.file_name}`;
+    if (VIDEO_EXTS.test(item.file_url)) {
+      el.innerHTML = `<video src="${fullUrl}" muted preload="metadata"></video>`;
+    } else {
+      el.innerHTML = `<img src="${fullUrl}" alt="${esc(item.file_name || '')}" loading="lazy" />`;
+    }
+    el.addEventListener('click', () => window.open(fullUrl, '_blank'));
+    body.appendChild(el);
+  });
+}
+
+// ── Voice messages ────────────────────────────────────────────────────────────
+function initVoiceHandlers() {
+  const startBtn  = document.getElementById('voiceStartBtn');
+  const stopBtn   = document.getElementById('voiceStopBtn');
+  const sendBtn   = document.getElementById('voiceSendBtn');
+  const cancelBtn = document.getElementById('voiceCancelBtn');
+  const status    = document.getElementById('voiceStatus');
+  const timer     = document.getElementById('voiceTimer');
+  const preview   = document.getElementById('voicePreview');
+  const overlay   = document.getElementById('voiceOverlay');
+  const micBtn    = document.getElementById('voiceRecordBtn');
+
+  if (micBtn) micBtn.addEventListener('click', () => {
+    if (!activeId) { showToast('Open a channel or DM first'); return; }
+    overlay?.classList.remove('hidden');
+    // Reset state
+    startBtn.disabled  = false;
+    stopBtn.disabled   = true;
+    sendBtn.style.display = 'none';
+    preview.style.display = 'none';
+    status.textContent = 'Press Start to record';
+    timer.textContent  = '0:00';
+    voiceChunks = [];
+  });
+
+  if (startBtn) startBtn.addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceChunks = [];
+      voiceRecorder = new MediaRecorder(stream);
+      voiceRecorder.ondataavailable = e => { if (e.data.size) voiceChunks.push(e.data); };
+      voiceRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(voiceChunks, { type: 'audio/webm' });
+        preview.src = URL.createObjectURL(blob);
+        preview.style.display = '';
+        sendBtn.style.display = '';
+        status.textContent = 'Preview below. Press Send to share.';
+      };
+      voiceRecorder.start();
+      startBtn.disabled = true;
+      stopBtn.disabled  = false;
+      status.textContent = '🔴 Recording…';
+      let secs = 0;
+      clearInterval(voiceTimerInterval);
+      voiceTimerInterval = setInterval(() => {
+        secs++;
+        timer.textContent = `${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}`;
+        if (secs >= 120) stopBtn.click(); // 2-min max
+      }, 1000);
+    } catch { showToast('Microphone access denied'); }
+  });
+
+  if (stopBtn) stopBtn.addEventListener('click', () => {
+    voiceRecorder?.stop();
+    stopBtn.disabled = true;
+    clearInterval(voiceTimerInterval);
+  });
+
+  if (sendBtn) sendBtn.addEventListener('click', async () => {
+    const blob = new Blob(voiceChunks, { type: 'audio/webm' });
+    const fd   = new FormData();
+    fd.append('file', blob, `voice-${Date.now()}.webm`);
+    showToast('Sending voice message…');
+    const res = await fetch(`${API}/chat/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    if (!res.ok) { showToast('Upload failed'); return; }
+    const { url, name } = await res.json();
+    const payload = { file_url: url, file_name: name, content: '🎤 Voice message' };
+    if (activeType === 'channel') { payload.type = 'channel_message'; payload.channel_id = activeId; }
+    else                          { payload.type = 'dm'; payload.to_user_id = activeId; }
+    wsSend(payload);
+    overlay?.classList.add('hidden');
+    showToast('Voice message sent!');
+  });
+
+  if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    voiceRecorder?.stop();
+    clearInterval(voiceTimerInterval);
+    overlay?.classList.add('hidden');
+  });
+}
 
 // ── Delete message ─────────────────────────────────────────────────────────
 async function deleteMessage(msgId) {

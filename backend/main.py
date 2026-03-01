@@ -18,10 +18,14 @@ Endpoints:
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+
+import httpx
+from bs4 import BeautifulSoup
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -1707,6 +1711,113 @@ async def use_invite(
         "channel":    {"id": ch.id, "name": ch.name} if ch else None,
         "uses":       inv.uses,
     }
+
+
+# -------------------------------------------------------------
+# Link preview
+# -------------------------------------------------------------
+@app.get("/link-preview")
+async def link_preview(url: str, current_user: User = Depends(get_current_user)):
+    """Fetch OG metadata from an external URL and return title/desc/image."""
+    try:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+            r = await client.get(
+                url,
+                headers={"User-Agent": "SyncTact/1.0 (link preview bot)"},
+            )
+        soup = BeautifulSoup(r.text, "lxml")
+
+        def meta(prop: str) -> str:
+            tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+            return (tag.get("content") or "").strip() if tag else ""
+
+        title   = meta("og:title") or meta("twitter:title") or (soup.title.string.strip() if soup.title else "")
+        desc    = meta("og:description") or meta("description") or meta("twitter:description")
+        image   = meta("og:image") or meta("twitter:image")
+        site    = meta("og:site_name")
+        return {
+            "title":       title[:200] if title else url,
+            "description": desc[:300],
+            "image":       image[:500],
+            "site":        site[:100],
+            "url":         url,
+        }
+    except Exception:
+        return {"title": url, "description": "", "image": "", "site": "", "url": url}
+
+
+# -------------------------------------------------------------
+# Per-channel notification preferences
+# -------------------------------------------------------------
+class ChannelNotifPref(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    user_id:    int           = Field(foreign_key="user.id", index=True)
+    channel_id: int           = Field(foreign_key="channel.id", index=True)
+    muted:      bool          = Field(default=False)
+
+
+@app.get("/notifications/prefs")
+def get_notif_prefs(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rows = session.exec(
+        select(ChannelNotifPref).where(ChannelNotifPref.user_id == current_user.id)
+    ).all()
+    return {r.channel_id: {"muted": r.muted} for r in rows}
+
+
+@app.put("/notifications/prefs/{channel_id}")
+def set_notif_pref(
+    channel_id: int,
+    muted: bool,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    row = session.exec(
+        select(ChannelNotifPref)
+        .where(ChannelNotifPref.user_id == current_user.id)
+        .where(ChannelNotifPref.channel_id == channel_id)
+    ).first()
+    if row:
+        row.muted = muted
+    else:
+        row = ChannelNotifPref(user_id=current_user.id, channel_id=channel_id, muted=muted)
+        session.add(row)
+    session.commit()
+    return {"channel_id": channel_id, "muted": muted}
+
+
+# -------------------------------------------------------------
+# Image / media gallery for a channel
+# -------------------------------------------------------------
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif", ".mp4", ".webm", ".mov"}
+
+@app.get("/chat/channels/{channel_id}/gallery")
+def channel_gallery(
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    msgs = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.channel_id == channel_id)
+        .where(ChatMessage.file_url != None)  # noqa: E711
+        .order_by(ChatMessage.created_at.desc())
+        .limit(200)
+    ).all()
+    items = []
+    for m in msgs:
+        ext = os.path.splitext((m.file_name or "").lower())[1]
+        if ext in IMAGE_EXTS:
+            items.append({
+                "msg_id":    m.id,
+                "file_url":  m.file_url,
+                "file_name": m.file_name,
+                "sender":    m.sender_name,
+                "ts":        m.created_at.isoformat() if m.created_at else None,
+            })
+    return items
 
 
 # -------------------------------------------------------------
