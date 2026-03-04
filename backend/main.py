@@ -106,6 +106,8 @@ class Channel(SQLModel, table=True):
     slowmode_seconds: int           = Field(default=0)
     category_id:      Optional[int] = Field(default=None)
     welcome_message:  Optional[str] = Field(default=None)
+    readonly:         bool          = Field(default=False)   # only mods/admins can post
+    archived:         bool          = Field(default=False)   # soft-archived
     created_at:       datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -290,6 +292,52 @@ class ServerSetting(SQLModel, table=True):
     updated_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class UserBlock(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    blocker_id: int           = Field(index=True)
+    blocked_id: int           = Field(index=True)
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MessageTemplate(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    user_id:    int           = Field(index=True)
+    title:      str
+    content:    str
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Reminder(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    user_id:    int           = Field(index=True)
+    channel_id: Optional[int] = Field(default=None)
+    content:    str
+    remind_at:  datetime
+    sent:       bool          = Field(default=False)
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CalendarEvent(SQLModel, table=True):
+    id:          Optional[int] = Field(default=None, primary_key=True)
+    channel_id:  Optional[int] = Field(default=None, index=True)
+    creator_id:  int
+    creator_name: str
+    title:        str
+    description:  Optional[str] = Field(default=None)
+    starts_at:    datetime
+    ends_at:      Optional[datetime] = Field(default=None)
+    created_at:   datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CalendarEventRsvp(SQLModel, table=True):
+    id:       Optional[int] = Field(default=None, primary_key=True)
+    event_id: int           = Field(index=True)
+    user_id:  int
+    name:     str
+    status:   str           = Field(default='yes')  # yes|no|maybe
+    created_at: datetime    = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 def create_db_tables():
     SQLModel.metadata.create_all(engine)
 
@@ -332,6 +380,8 @@ def migrate_db():
                 ('slowmode_seconds', 'ALTER TABLE channel ADD COLUMN slowmode_seconds INTEGER DEFAULT 0'),
                 ('category_id',      'ALTER TABLE channel ADD COLUMN category_id INTEGER DEFAULT NULL'),
                 ('welcome_message',  'ALTER TABLE channel ADD COLUMN welcome_message VARCHAR DEFAULT NULL'),
+                ('readonly',         'ALTER TABLE channel ADD COLUMN readonly BOOLEAN DEFAULT FALSE'),
+                ('archived',         'ALTER TABLE channel ADD COLUMN archived BOOLEAN DEFAULT FALSE'),
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(ddl))
@@ -922,6 +972,383 @@ def analytics_leaderboard(channel_id: Optional[int] = None, limit: int = 10,
     return [{"user_id": uid, "name": users.get(uid, "Unknown"), "count": cnt} for uid, cnt in top]
 
 
+# ─────────────────────────────────────────────────────────────
+# User Blocking
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/blocks")
+def list_blocks(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    blocks = session.exec(select(UserBlock).where(UserBlock.blocker_id == current_user.id)).all()
+    blocked_ids = [b.blocked_id for b in blocks]
+    names = {}
+    if blocked_ids:
+        for u in session.exec(select(User).where(User.id.in_(blocked_ids))).all():
+            names[u.id] = u.name
+    return [{"id": b.id, "blocked_id": b.blocked_id, "name": names.get(b.blocked_id, "Unknown")} for b in blocks]
+
+
+@app.post("/blocks/{target_id}")
+def block_user(target_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    if target_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot block yourself")
+    existing = session.exec(select(UserBlock).where(UserBlock.blocker_id == current_user.id, UserBlock.blocked_id == target_id)).first()
+    if existing:
+        return {"ok": True, "already": True}
+    session.add(UserBlock(blocker_id=current_user.id, blocked_id=target_id))
+    session.commit()
+    return {"ok": True}
+
+
+@app.delete("/blocks/{target_id}")
+def unblock_user(target_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    b = session.exec(select(UserBlock).where(UserBlock.blocker_id == current_user.id, UserBlock.blocked_id == target_id)).first()
+    if b:
+        session.delete(b); session.commit()
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# User Badges  (computed dynamically from message count + tenure)
+# ─────────────────────────────────────────────────────────────
+
+_BADGE_TIERS = [
+    (1,    "Newcomer",    "#64748b", "fa-solid fa-seedling"),
+    (50,   "Regular",     "#10b981", "fa-solid fa-star"),
+    (200,  "Active",      "#3b82f6", "fa-solid fa-bolt"),
+    (500,  "Veteran",     "#f59e0b", "fa-solid fa-crown"),
+    (1000, "Legend",      "#a855f7", "fa-solid fa-dragon"),
+]
+
+def _compute_badges(user: User, msg_count: int) -> list:
+    badges = []
+    Badge = next((b for b in reversed(_BADGE_TIERS) if msg_count >= b[0]), _BADGE_TIERS[0])
+    badges.append({"label": Badge[1], "color": Badge[2], "icon": Badge[3], "type": "activity"})
+    # Tenure badge
+    days = (datetime.now(timezone.utc) - user.created_at.replace(tzinfo=timezone.utc) if user.created_at.tzinfo is None else datetime.now(timezone.utc) - user.created_at).days
+    if days >= 365:
+        badges.append({"label": "Veteran Member", "color": "#f59e0b", "icon": "fa-solid fa-medal", "type": "tenure"})
+    elif days >= 30:
+        badges.append({"label": "Member", "color": "#10b981", "icon": "fa-solid fa-user-check", "type": "tenure"})
+    if user.role in ('admin', 'moderator'):
+        badges.append({"label": user.role.capitalize(), "color": "#ef4444" if user.role == 'admin' else "#f59e0b", "icon": "fa-solid fa-shield-halved", "type": "role"})
+    return badges
+
+
+@app.get("/badges/me")
+def get_my_badges(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    cnt = len(session.exec(select(ChatMessage).where(ChatMessage.sender_id == current_user.id)).all())
+    return {"message_count": cnt, "badges": _compute_badges(current_user, cnt)}
+
+
+@app.get("/badges/{user_id}")
+def get_user_badges(user_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    cnt = len(session.exec(select(ChatMessage).where(ChatMessage.sender_id == user_id)).all())
+    return {"message_count": cnt, "badges": _compute_badges(user, cnt)}
+
+
+# ─────────────────────────────────────────────────────────────
+# Message Templates / Snippets
+# ─────────────────────────────────────────────────────────────
+
+class TemplateIn(BaseModel):
+    title:   str
+    content: str
+
+
+@app.get("/templates")
+def list_templates(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    rows = session.exec(select(MessageTemplate).where(MessageTemplate.user_id == current_user.id)).all()
+    return [{"id": t.id, "title": t.title, "content": t.content} for t in rows]
+
+
+@app.post("/templates")
+def create_template(body: TemplateIn, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    t = MessageTemplate(user_id=current_user.id, title=body.title[:80], content=body.content[:2000])
+    session.add(t); session.commit(); session.refresh(t)
+    return {"id": t.id, "title": t.title, "content": t.content}
+
+
+@app.delete("/templates/{tid}")
+def delete_template(tid: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    t = session.get(MessageTemplate, tid)
+    if not t or t.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    session.delete(t); session.commit()
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Reminders  (/remind slash command)
+# ─────────────────────────────────────────────────────────────
+
+class ReminderIn(BaseModel):
+    content:    str
+    minutes:    Optional[int]  = None  # relative
+    remind_at:  Optional[str]  = None  # ISO datetime absolute
+    channel_id: Optional[int]  = None
+
+
+@app.post("/remind")
+def create_reminder(body: ReminderIn, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    if body.minutes:
+        at = datetime.now(timezone.utc) + timedelta(minutes=body.minutes)
+    elif body.remind_at:
+        at = datetime.fromisoformat(body.remind_at.replace("Z", "+00:00"))
+    else:
+        raise HTTPException(status_code=400, detail="Provide minutes or remind_at")
+    r = Reminder(user_id=current_user.id, channel_id=body.channel_id, content=body.content[:500], remind_at=at)
+    session.add(r); session.commit(); session.refresh(r)
+    return {"id": r.id, "remind_at": r.remind_at.isoformat()}
+
+
+@app.get("/remind/pending")
+def pending_reminders(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    now = datetime.now(timezone.utc)
+    rows = session.exec(select(Reminder).where(
+        Reminder.user_id == current_user.id,
+        Reminder.sent == False,
+        Reminder.remind_at <= now,
+    )).all()
+    out = []
+    for r in rows:
+        out.append({"id": r.id, "content": r.content, "channel_id": r.channel_id,
+                    "remind_at": r.remind_at.isoformat()})
+        r.sent = True; session.add(r)
+    session.commit()
+    return out
+
+
+# ─────────────────────────────────────────────────────────────
+# Calendar Events
+# ─────────────────────────────────────────────────────────────
+
+class EventIn(BaseModel):
+    title:       str
+    description: Optional[str] = None
+    starts_at:   str
+    ends_at:     Optional[str] = None
+    channel_id:  Optional[int] = None
+
+
+@app.get("/events")
+def list_events(channel_id: Optional[int] = None, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    q = select(CalendarEvent)
+    if channel_id:
+        q = q.where(CalendarEvent.channel_id == channel_id)
+    rows = session.exec(q.order_by(CalendarEvent.starts_at)).all()
+    out = []
+    for e in rows:
+        rsvps = session.exec(select(CalendarEventRsvp).where(CalendarEventRsvp.event_id == e.id)).all()
+        out.append({
+            "id": e.id, "title": e.title, "description": e.description,
+            "starts_at": e.starts_at.isoformat(), "ends_at": e.ends_at.isoformat() if e.ends_at else None,
+            "creator_id": e.creator_id, "creator_name": e.creator_name, "channel_id": e.channel_id,
+            "rsvps": [{"user_id": r.user_id, "name": r.name, "status": r.status} for r in rsvps],
+        })
+    return out
+
+
+@app.post("/events")
+def create_event(body: EventIn, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    e = CalendarEvent(
+        channel_id=body.channel_id, creator_id=current_user.id, creator_name=current_user.name,
+        title=body.title[:200], description=body.description,
+        starts_at=datetime.fromisoformat(body.starts_at.replace("Z", "+00:00")),
+        ends_at=datetime.fromisoformat(body.ends_at.replace("Z", "+00:00")) if body.ends_at else None,
+    )
+    session.add(e); session.commit(); session.refresh(e)
+    return {"id": e.id, "title": e.title, "starts_at": e.starts_at.isoformat()}
+
+
+@app.post("/events/{event_id}/rsvp")
+def rsvp_event(event_id: int, status: str = "yes", current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    if status not in ("yes", "no", "maybe"):
+        raise HTTPException(status_code=400, detail="status must be yes|no|maybe")
+    existing = session.exec(select(CalendarEventRsvp).where(CalendarEventRsvp.event_id == event_id, CalendarEventRsvp.user_id == current_user.id)).first()
+    if existing:
+        existing.status = status; session.add(existing)
+    else:
+        session.add(CalendarEventRsvp(event_id=event_id, user_id=current_user.id, name=current_user.name, status=status))
+    session.commit()
+    return {"ok": True, "status": status}
+
+
+@app.delete("/events/{event_id}")
+def delete_event(event_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    e = session.get(CalendarEvent, event_id)
+    if not e:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if e.creator_id != current_user.id and current_user.role not in ('admin', 'moderator'):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    session.delete(e); session.commit()
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Channel archive / readonly toggle
+# ─────────────────────────────────────────────────────────────
+
+class ChannelSettingsIn(BaseModel):
+    archived: Optional[bool] = None
+    readonly: Optional[bool] = None
+    name:        Optional[str]  = None
+    description: Optional[str] = None
+    welcome_message: Optional[str] = None
+    slowmode_seconds: Optional[int] = None
+
+
+@app.patch("/channels/{channel_id}/settings")
+def update_channel_settings(channel_id: int, body: ChannelSettingsIn,
+                              current_user: User = Depends(get_current_user),
+                              session: Session = Depends(get_session)):
+    if current_user.role not in ('admin', 'moderator'):
+        raise HTTPException(status_code=403, detail="Moderator required")
+    ch = session.get(Channel, channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if body.archived is not None:  ch.archived = body.archived
+    if body.readonly is not None:  ch.readonly = body.readonly
+    if body.name is not None:      ch.name = body.name[:80]
+    if body.description is not None: ch.description = body.description[:300]
+    if body.welcome_message is not None: ch.welcome_message = body.welcome_message[:500]
+    if body.slowmode_seconds is not None: ch.slowmode_seconds = max(0, body.slowmode_seconds)
+    session.add(ch); session.commit()
+    return {"ok": True, "channel_id": channel_id, "archived": ch.archived, "readonly": ch.readonly}
+
+
+# ─────────────────────────────────────────────────────────────
+# Server Discovery
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/discovery")
+def server_discovery(session: Session = Depends(get_session)):
+    """Return all non-archived channels with member/message counts."""
+    channels = session.exec(select(Channel).where(Channel.archived == False)).all()
+    out = []
+    for ch in channels:
+        msg_count = len(session.exec(select(ChatMessage).where(ChatMessage.channel_id == ch.id)).all())
+        out.append({
+            "id": ch.id, "name": ch.name, "description": ch.description or "",
+            "message_count": msg_count,
+            "created_at": ch.created_at.isoformat(),
+        })
+    return sorted(out, key=lambda x: -x["message_count"])
+
+
+# ─────────────────────────────────────────────────────────────
+# File Browser  (all files shared in a channel)
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/files/{channel_id}")
+def channel_files(channel_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    rows = session.exec(
+        select(ChatMessage).where(
+            ChatMessage.channel_id == channel_id,
+            ChatMessage.file_url != None,
+        ).order_by(ChatMessage.created_at.desc())
+    ).all()
+    return [{"id": m.id, "file_url": m.file_url, "file_name": m.file_name,
+             "sender_name": m.sender_name, "ts": m.created_at.isoformat()} for m in rows]
+
+
+# ─────────────────────────────────────────────────────────────
+# Translation proxy  (MyMemory — free, no key needed)
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/translate")
+async def translate_text(text: str = Query(..., max_length=500),
+                          target: str = Query(default="en"),
+                          current_user: User = Depends(get_current_user)):
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get("https://api.mymemory.translated.net/get",
+                                  params={"q": text, "langpair": f"auto|{target}"})
+            data = r.json()
+            translated = data.get("responseData", {}).get("translatedText", text)
+    except Exception:
+        translated = text
+    return {"original": text, "translated": translated, "target": target}
+
+
+# ─────────────────────────────────────────────────────────────
+# Video / Voice Call signaling via chat WS  (REST: initiate call)
+# ─────────────────────────────────────────────────────────────
+
+@app.post("/channels/{channel_id}/call")
+async def start_call(channel_id: int, current_user: User = Depends(get_current_user)):
+    room_code = f"ch{channel_id}"
+    await _chat_broadcast({
+        "type":         "call_started",
+        "channel_id":   channel_id,
+        "room_code":    room_code,
+        "started_by":   current_user.id,
+        "started_name": current_user.name,
+    })
+    return {"room_code": room_code}
+
+
+@app.delete("/channels/{channel_id}/call")
+async def end_call(channel_id: int, current_user: User = Depends(get_current_user)):
+    await _chat_broadcast({"type": "call_ended", "channel_id": channel_id})
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Notification sound preferences  (server just stores the pref)
+# ─────────────────────────────────────────────────────────────
+
+class NotifPrefIn(BaseModel):
+    sounds_enabled: bool = True
+    sound_theme:    str  = "default"  # default|minimal|none
+
+
+@app.patch("/notif-prefs")
+def update_notif_prefs(body: NotifPrefIn, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    from sqlmodel import text as sql_text
+    for k, v in [("notif_sounds", str(body.sounds_enabled)), ("notif_theme_" + str(current_user.id), body.sound_theme)]:
+        existing = session.exec(select(ServerSetting).where(ServerSetting.key == k)).first()
+        if existing:
+            existing.value = v; session.add(existing)
+        else:
+            session.add(ServerSetting(key=k, value=v, updated_by=current_user.id))
+    session.commit()
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Email Digest stub  (requires SMTP_* env vars for real sending)
+# ─────────────────────────────────────────────────────────────
+
+@app.post("/email-digest")
+async def trigger_email_digest(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    """Stub: in production wire SMTP_HOST/SMTP_USER/SMTP_PASS env vars."""
+    smtp_host = os.getenv("SMTP_HOST")
+    if not smtp_host:
+        return {"ok": False, "detail": "SMTP not configured on server"}
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    msgs = session.exec(select(ChatMessage).where(ChatMessage.created_at >= since).order_by(ChatMessage.created_at.desc()).limit(20)).all()
+    body_lines = [f"• [{m.sender_name}] {m.content[:120]}" for m in msgs if m.content]
+    body_text = "Your SyncTact digest (last 24 h):\n\n" + "\n".join(body_lines[:20])
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        msg = MIMEText(body_text)
+        msg["Subject"] = "SyncTact Daily Digest"
+        msg["From"]    = os.getenv("SMTP_USER", "noreply@synctact.app")
+        msg["To"]      = current_user.email
+        with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT", 587))) as s:
+            s.starttls()
+            s.login(os.getenv("SMTP_USER", ""), os.getenv("SMTP_PASS", ""))
+            s.send_message(msg)
+        return {"ok": True, "sent_to": current_user.email}
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)}
+
+
 # -------------------------------------------------------------
 # Admin endpoints
 # -------------------------------------------------------------
@@ -1192,7 +1619,8 @@ def list_channels(
     channels = session.exec(select(Channel).order_by(Channel.created_at)).all()
     return [{"id": c.id, "name": c.name, "description": c.description,
              "created_by": c.created_by, "slowmode_seconds": c.slowmode_seconds or 0,
-             "category_id": c.category_id} for c in channels]
+             "category_id": c.category_id,
+             "readonly": bool(c.readonly), "archived": bool(c.archived)} for c in channels]
 
 
 @app.post("/chat/channels", status_code=201)
@@ -2531,6 +2959,32 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                                 "message": f"Slowmode: please wait {wait}s before sending again."}))
                             continue
                         _slowmode_last[key] = _time_mod.time()
+                    # Readonly check
+                    if ch and ch.readonly:
+                        with Session(engine) as s2:
+                            u2 = s2.get(User, user_id)
+                        if not u2 or u2.role not in ('admin', 'moderator'):
+                            await ws.send_text(json.dumps({"type": "error", "message": "This channel is read-only."}))
+                            continue
+                    # /remind slash command
+                    if content and content.lower().startswith("/remind "):
+                        # /remind me in 30m to do something  OR  /remind me at 2026-03-05T10:00 to ...
+                        import re as _re
+                        m_rel = _re.search(r'in\s+(\d+)\s*m(?:in)?', content, _re.I)
+                        m_abs = _re.search(r'at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', content, _re.I)
+                        note  = _re.sub(r'^/remind\s+me\s+(in\s+\d+\s*m(?:in)?\s+to?|at\s+\S+\s+to?)\s*', '', content, flags=_re.I).strip() or content
+                        if m_rel:
+                            at = datetime.now(timezone.utc) + timedelta(minutes=int(m_rel.group(1)))
+                        elif m_abs:
+                            at = datetime.fromisoformat(m_abs.group(1))
+                        else:
+                            at = datetime.now(timezone.utc) + timedelta(minutes=30)
+                        with Session(engine) as rs:
+                            rs.add(Reminder(user_id=user_id, channel_id=channel_id, content=note, remind_at=at))
+                            rs.commit()
+                        await ws.send_text(json.dumps({"type": "system_msg",
+                            "message": f"⏰ Reminder set for {at.strftime('%Y-%m-%d %H:%M')} UTC: {note}"}))
+                        continue
                     # Bad words filter
                     if content:
                         content = _filter_bad_words(content)

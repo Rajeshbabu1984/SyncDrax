@@ -1,0 +1,19 @@
+{
+  "name": "SyncTact",
+  "short_name": "SyncTact",
+  "description": "Collaborate Without Limits — team chat, video calls, and more.",
+  "start_url": "/chat.html",
+  "display": "standalone",
+  "background_color": "#1a1d21",
+  "theme_color": "#7c3aed",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%237c3aed'/><text y='.9em' font-size='70' x='10'>⚡</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["productivity", "communication"],
+  "screenshots": []
+}

@@ -21,6 +21,7 @@
     </div>
     <div class="nav-links">
       <a href="#features" class="nav-link">Features</a>
+      <a href="#discovery" class="nav-link">Discover</a>
       <a href="#" class="nav-link">Pricing</a>
       <a href="chat.html" class="nav-link"><i class="fa-solid fa-comments" style="margin-right:4px;"></i>Chat</a>
       <button class="btn btn-ghost" id="signInBtn">Sign In</button>
@@ -119,6 +120,15 @@
         <h3>Screen Sharing</h3>
         <p>Share your entire screen or a single window with one click.</p>
       </div>
+    </div>
+  </section>
+
+  <!-- SERVER DISCOVERY -->
+  <section id="discovery" style="padding:60px 0;background:var(--bg-sidebar,#0f0e13);">
+    <div style="max-width:900px;margin:0 auto;padding:0 24px;">
+      <h2 style="font-size:1.8rem;font-weight:900;text-align:center;margin-bottom:8px;">Explore Channels</h2>
+      <p style="text-align:center;color:var(--text-muted,#828689);margin-bottom:32px;">Join active channels and start collaborating instantly.</p>
+      <div id="discoveryGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px;"></div>
     </div>
   </section>
 
@@ -329,6 +339,30 @@
       const code = generateCode();
       window.location.href = `meeting.html?guest=true&room=${code}`;
     });
+
+    /* -- Server Discovery -- */
+    (async function loadDiscovery() {
+      const grid = document.getElementById('discoveryGrid');
+      if (!grid) return;
+      try {
+        const r = await fetch(`${API}/discovery`);
+        const channels = await r.json();
+        if (!channels.length) {
+          grid.innerHTML = '<p style="color:#828689;text-align:center;grid-column:1/-1;">No public channels yet.</p>';
+          return;
+        }
+        grid.innerHTML = channels.slice(0,12).map(ch => `
+          <a href="chat.html" style="background:#19171d;border:1px solid #2f3133;border-radius:12px;padding:18px;text-decoration:none;color:#d1d2d3;transition:border-color .2s,transform .2s;display:block;"
+             onmouseover="this.style.borderColor='#7c3aed';this.style.transform='translateY(-2px)';"
+             onmouseout="this.style.borderColor='#2f3133';this.style.transform='';">
+            <div style="font-size:1rem;font-weight:800;margin-bottom:6px;"># ${ch.name}</div>
+            ${ch.description ? `<div style="font-size:.78rem;color:#828689;margin-bottom:8px;">${ch.description}</div>` : ''}
+            <div style="font-size:.7rem;color:#7c3aed;">${ch.message_count} messages</div>
+          </a>`).join('');
+      } catch(e) {
+        grid.innerHTML = '<p style="color:#828689;text-align:center;grid-column:1/-1;">Could not load channels</p>';
+      }
+    })();
   </script>
 </body>
 </html>

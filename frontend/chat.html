@@ -9,6 +9,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#7c3aed" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="js/config.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -620,6 +624,114 @@
                   border-radius:4px; padding:2px 8px; cursor:pointer; font-size:.72rem;
                   transition:all .15s; }
     .del-wh-btn:hover { background:rgba(220,50,50,.15); border-color:#e55; color:#e55; }
+
+    /* ── Mobile responsive ── */
+    #hamburgerBtn { display:none; background:none; border:none; color:var(--text); cursor:pointer; font-size:1.2rem; padding:4px 8px; }
+    #sidebarOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:199; }
+    @media (max-width: 720px) {
+      #hamburgerBtn { display:block; }
+      .sidebar { position:fixed; left:-270px; top:0; bottom:0; z-index:200; transition:left .25s; }
+      .sidebar.mobile-open { left:0; box-shadow:4px 0 24px rgba(0,0,0,.4); }
+      #sidebarOverlay.visible { display:block; }
+      .workspace { overflow:hidden; }
+      .chat-header { padding:10px 12px; }
+      .msg-input-row { padding:8px 10px; }
+      .ia-btn { padding:6px 8px; }
+      #msgInput { font-size:.9rem; }
+      .msg-row { padding:4px 10px; }
+      .modal-card { width:95vw !important; max-height:90vh; }
+    }
+
+    /* ── User badges ── */
+    .badge-pill { display:inline-flex; align-items:center; gap:4px; padding:2px 8px;
+                  border-radius:20px; font-size:.65rem; font-weight:700; margin:2px; }
+    .badge-pill i { font-size:.7rem; }
+    .badges-row { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+
+    /* ── Active call bar ── */
+    #callBar { display:none; background:linear-gradient(90deg,#059669,#10b981);
+               color:#fff; padding:8px 16px; font-size:.82rem; font-weight:700;
+               align-items:center; gap:12px; border-bottom:2px solid #059669; flex-shrink:0; }
+    #callBar.visible { display:flex; }
+    .call-join-btn { background:#fff; color:#059669; border:none; border-radius:8px;
+                     padding:5px 14px; font-weight:700; cursor:pointer; font-size:.8rem; }
+    .call-end-btn  { background:rgba(0,0,0,.2); color:#fff; border:none; border-radius:8px;
+                     padding:5px 14px; font-weight:700; cursor:pointer; font-size:.8rem; margin-left:auto; }
+
+    /* ── Channel status indicators ── */
+    .ch-readonly-badge { font-size:.62rem; color:#f59e0b; margin-left:4px; }
+    .ch-archived-badge { font-size:.62rem; color:#64748b; margin-left:4px; }
+    .readonly-bar { padding:6px 16px; font-size:.78rem; color:#f59e0b; background:rgba(245,158,11,.08);
+                    border-top:1px solid rgba(245,158,11,.2); text-align:center; display:none; }
+    .readonly-bar.visible { display:block; }
+
+    /* ── File browser ── */
+    .file-browser-panel { flex-shrink:0; width:260px; border-left:1px solid var(--border);
+                           background:var(--bg-sidebar); display:flex; flex-direction:column;
+                           overflow:hidden; transition:width .25s; }
+    .file-browser-panel.hidden { width:0; overflow:hidden; border:none; }
+    .fb-header { padding:12px 14px; font-size:.82rem; font-weight:700; border-bottom:1px solid var(--border);
+                 display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+    .fb-list { flex:1; overflow-y:auto; padding:8px; }
+    .fb-item { display:flex; align-items:center; gap:8px; padding:8px; border-radius:8px;
+               cursor:pointer; transition:background .15s; font-size:.78rem; }
+    .fb-item:hover { background:var(--bg-hover); }
+    .fb-item .fb-icon { font-size:1.1rem; flex-shrink:0; color:var(--purple-l); }
+    .fb-item .fb-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .fb-item .fb-date { font-size:.65rem; color:var(--text-muted); flex-shrink:0; }
+
+    /* ── Events modal ── */
+    .event-card { background:var(--bg-input); border:1px solid var(--border); border-radius:10px;
+                  padding:12px; margin-bottom:10px; }
+    .event-title { font-weight:700; font-size:.9rem; margin-bottom:4px; }
+    .event-time  { font-size:.75rem; color:var(--text-muted); margin-bottom:6px; }
+    .event-rsvps { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+    .rsvp-btn { padding:4px 12px; border-radius:6px; border:1px solid var(--border); cursor:pointer;
+                font-size:.75rem; background:none; color:var(--text); transition:all .15s; }
+    .rsvp-btn.yes    { border-color:#10b981; color:#10b981; }
+    .rsvp-btn.no     { border-color:#ef4444; color:#ef4444; }
+    .rsvp-btn.maybe  { border-color:#f59e0b; color:#f59e0b; }
+    .rsvp-btn.active { opacity:1; }
+    .rsvp-count { font-size:.7rem; color:var(--text-muted); align-self:center; }
+
+    /* ── GIF picker ── */
+    .gif-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+                max-height:340px; overflow-y:auto; margin-top:10px; }
+    .gif-thumb { width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px;
+                 cursor:pointer; transition:transform .15s, opacity .15s; background:var(--bg-input); }
+    .gif-thumb:hover { transform:scale(1.04); opacity:.9; }
+
+    /* ── Message templates ── */
+    .template-item { display:flex; align-items:center; gap:8px; padding:8px;
+                     background:var(--bg-input); border-radius:8px; margin-bottom:6px; }
+    .template-item .t-title { font-weight:600; font-size:.82rem; flex:1; }
+    .template-item .t-content { font-size:.72rem; color:var(--text-muted); flex:2;
+                                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .use-template-btn { background:var(--purple); color:#fff; border:none; border-radius:6px;
+                        padding:4px 10px; cursor:pointer; font-size:.72rem; font-weight:700;
+                        transition:background .15s; flex-shrink:0; }
+    .use-template-btn:hover { background:var(--purple-l); }
+    .del-template-btn { background:none; border:1px solid #444; color:var(--text-muted);
+                        border-radius:6px; padding:4px 8px; cursor:pointer; flex-shrink:0; }
+    .del-template-btn:hover { background:rgba(220,50,50,.15); border-color:#e55; color:#e55; }
+
+    /* ── Notification sounds toggle ── */
+    .sound-toggle { display:flex; align-items:center; gap:10px; padding:10px 0; }
+    .toggle-switch { position:relative; width:38px; height:20px; }
+    .toggle-switch input { opacity:0; width:0; height:0; }
+    .toggle-switch .slider { position:absolute; inset:0; background:var(--border);
+                              border-radius:20px; cursor:pointer; transition:.3s; }
+    .toggle-switch .slider::before { content:''; position:absolute; height:14px; width:14px;
+                                     left:3px; bottom:3px; background:#fff; border-radius:50%;
+                                     transition:.3s; }
+    .toggle-switch input:checked + .slider { background:var(--purple); }
+    .toggle-switch input:checked + .slider::before { transform:translateX(18px); }
+
+    /* ── Block user context option ── */
+    .ctx-block { color:#ef4444; }
+
+    /* ── highlight.js overrides ── */
+    .hljs { border-radius:6px; font-size:.8rem; }
   </style>
 </head>
 <body>
@@ -633,12 +745,16 @@
   </div>
 </div>
 
+<!-- Sidebar mobile overlay -->
+<div id="sidebarOverlay"></div>
+
 <!-- Main workspace -->
 <div class="workspace" id="workspace">
 
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="ws-header">
+      <button id="hamburgerBtn" title="Toggle sidebar"><i class="fa-solid fa-bars"></i></button>
       <div class="ws-logo"><img src="images/logo.png" alt="SyncTact" style="height:28px;width:auto;"> <span>SyncTact</span></div>
       <button class="theme-toggle" id="themeToggleBtn" title="Toggle light/dark theme"><i class="fa-regular fa-moon"></i></button>
       <a href="index.html" class="btn-home" title="Back to Home"><i class="fa-solid fa-house"></i></a>
@@ -718,10 +834,23 @@
         <button class="ia-btn" id="auditLogBtn" title="Audit log"><i class="fa-solid fa-shield-halved"></i></button>
         <button class="ia-btn" id="notifBtn" title="Enable push notifications"><i class="fa-regular fa-bell"></i></button>
         <button class="ia-btn" id="createPollBtn" title="Create poll"><i class="fa-solid fa-chart-bar"></i></button>
+        <button class="ia-btn" id="startCallBtn" title="Start voice/video call" style="display:none"><i class="fa-solid fa-phone"></i></button>
+        <button class="ia-btn" id="fileBrowserBtn" title="File browser" style="display:none"><i class="fa-solid fa-folder-open"></i></button>
+        <button class="ia-btn" id="templatesBtn" title="Message templates"><i class="fa-solid fa-rectangle-list"></i></button>
+        <button class="ia-btn" id="eventsBtn" title="Events &amp; calendar"><i class="fa-regular fa-calendar"></i></button>
         <button class="ia-btn" id="searchBtn" title="Search (Ctrl+K)"><i class="fa-solid fa-magnifying-glass"></i></button>
         <span id="pinnedBadge" class="pinned-badge hidden">📌 0 pinned</span>
       </div>
     </div>
+    <!-- Active call bar -->
+    <div id="callBar">
+      <i class="fa-solid fa-phone-volume"></i>
+      <span id="callBarText">A call is active in this channel</span>
+      <button class="call-join-btn" id="callJoinBtn">Join</button>
+      <button class="call-end-btn" id="callEndBtn">End</button>
+    </div>
+    <!-- Readonly bar -->
+    <div class="readonly-bar" id="readonlyBar"><i class="fa-solid fa-lock"></i> This channel is read-only — only moderators can post.</div>
     <div class="pinned-bar hidden" id="pinnedBar"></div>
     <div class="messages-wrap" id="messagesWrap"></div>
     <div class="typing-bar" id="typingBar"></div>
@@ -744,6 +873,17 @@
       </div>
     </div>
   </main>
+
+  <!-- File browser panel (right side, hidden by default) -->
+  <div class="file-browser-panel hidden" id="fileBrowserPanel">
+    <div class="fb-header">
+      <span><i class="fa-solid fa-folder-open" style="color:var(--purple-l);margin-right:6px;"></i> Files</span>
+      <button class="ia-btn" id="closeFBBtn" title="Close"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="fb-list" id="fbList">
+      <div style="color:var(--text-muted);font-size:.8rem;padding:12px;text-align:center;">Select a channel to see files</div>
+    </div>
+  </div>
 
   <!-- Thread panel -->
   <div class="thread-panel hidden" id="threadPanel">
@@ -1117,7 +1257,12 @@
             <span style="font-size:.85rem;">Light Theme</span>
             <input type="checkbox" id="lightThemeCheckbox" style="width:18px;height:18px;cursor:pointer;" />
           </label>
-          <p style="font-size:.75rem;color:var(--text-muted);">Also available via the 🌙 button in the sidebar header.</p>
+          <div id="soundToggleWrap"></div>
+          <div id="myBadgesWrap" style="margin-top:14px;">
+            <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:6px;">Your Badges</div>
+            <div class="badges-row" id="myBadgesRow"></div>
+          </div>
+          <p style="font-size:.75rem;color:var(--text-muted);margin-top:12px;">Theme toggle also available via the moon button in the sidebar header.</p>
         </div>
       </div>
     </div>
@@ -1208,5 +1353,88 @@
     </div>
   </div>
 </div>
+
+<!-- Events / Calendar modal -->
+<div class="overlay hidden" id="eventsOverlay">
+  <div class="modal-card wide">
+    <h3><i class="fa-regular fa-calendar" style="color:var(--purple-l);margin-right:8px;"></i>Events &amp; Calendar</h3>
+    <div id="eventsList" style="max-height:300px;overflow-y:auto;margin:14px 0;"></div>
+    <h4 style="margin-bottom:10px;font-size:.85rem;">Create New Event</h4>
+    <input class="modal-input" id="eventTitle" placeholder="Event title" />
+    <textarea class="modal-input" id="eventDesc" placeholder="Description (optional)" rows="2" style="margin-top:8px;resize:vertical;"></textarea>
+    <div style="display:flex;gap:10px;margin-top:8px;">
+      <div style="flex:1;">
+        <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:4px;">Starts</div>
+        <input class="modal-input" id="eventStart" type="datetime-local" />
+      </div>
+      <div style="flex:1;">
+        <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:4px;">Ends (optional)</div>
+        <input class="modal-input" id="eventEnd" type="datetime-local" />
+      </div>
+    </div>
+    <div class="modal-row" style="margin-top:16px;">
+      <button class="modal-btn secondary" id="closeEventsBtn">Close</button>
+      <button class="modal-btn primary" id="createEventBtn">Create Event</button>
+    </div>
+  </div>
+</div>
+
+<!-- GIF Picker modal -->
+<div class="overlay hidden" id="gifOverlay">
+  <div class="modal-card" style="width:440px;">
+    <h3><i class="fa-solid fa-film" style="color:var(--purple-l);margin-right:8px;"></i>GIF Search</h3>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <input class="modal-input" id="gifSearch" placeholder="Search GIFs…" style="flex:1;" />
+      <button class="modal-btn primary" id="gifSearchBtn" style="flex-shrink:0;padding:0 16px;">Search</button>
+    </div>
+    <div class="gif-grid" id="gifGrid">
+      <div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:20px;font-size:.82rem;">Search for GIFs above</div>
+    </div>
+    <div class="modal-row" style="margin-top:14px;">
+      <button class="modal-btn secondary" id="closeGifBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Message Templates modal -->
+<div class="overlay hidden" id="templatesOverlay">
+  <div class="modal-card" style="width:500px;">
+    <h3><i class="fa-solid fa-rectangle-list" style="color:var(--purple-l);margin-right:8px;"></i>Message Templates</h3>
+    <div id="templatesList" style="max-height:260px;overflow-y:auto;margin:12px 0;"></div>
+    <h4 style="font-size:.82rem;margin-bottom:8px;">Save New Template</h4>
+    <input class="modal-input" id="templateTitle" placeholder="Template name" />
+    <textarea class="modal-input" id="templateContent" rows="3" placeholder="Template text…" style="margin-top:8px;resize:vertical;"></textarea>
+    <div class="modal-row" style="margin-top:14px;">
+      <button class="modal-btn secondary" id="closeTemplatesBtn">Close</button>
+      <button class="modal-btn primary" id="saveTemplateBtn">Save Template</button>
+    </div>
+  </div>
+</div>
+
+<!-- Blocked Users modal -->
+<div class="overlay hidden" id="blocksOverlay">
+  <div class="modal-card" style="width:420px;">
+    <h3><i class="fa-solid fa-ban" style="color:#ef4444;margin-right:8px;"></i>Blocked Users</h3>
+    <div id="blocksList" style="max-height:300px;overflow-y:auto;margin:12px 0;"></div>
+    <div class="modal-row" style="margin-top:14px;">
+      <button class="modal-btn secondary" id="closeBlocksBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Notification sound settings -->
+<audio id="sndMessage"  src="https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3"  preload="none"></audio>
+<audio id="sndMention"  src="https://assets.mixkit.co/active_storage/sfx/1862/1862-preview.mp3"  preload="none"></audio>
+<audio id="sndCallIn"   src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"  preload="none"></audio>
+<audio id="sndNotif"    src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"  preload="none"></audio>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
+</script>
+
 </body>
 </html>

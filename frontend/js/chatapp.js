@@ -234,6 +234,10 @@ async function initChat() {
   initNewFeatureHandlers();
   initKeyboardShortcuts();
   initUnreadJump();
+  initMobileSidebar();
+  initNotificationSounds();
+  initReminderPoll();
+  initNewFeatureHandlers2();
 
   // @mention dropdown keyboard nav
   document.getElementById('mentionDropdown').addEventListener('mousedown', e => {
@@ -502,6 +506,37 @@ function handleServerMsg(msg) {
       }
       break;
     }
+
+    case 'call_started': {
+      if (activeType === 'channel' && activeId === msg.channel_id) {
+        const bar = document.getElementById('callBar');
+        if (bar) {
+          document.getElementById('callBarText').textContent = `${msg.started_name} started a call`;
+          const joinBtn = document.getElementById('callJoinBtn');
+          if (joinBtn) joinBtn.onclick = () => window.open(`/meeting.html?room=${msg.room_code}&name=${encodeURIComponent(user.name)}`, '_blank');
+          bar.classList.add('visible');
+        }
+        playSound('callIn');
+      }
+      showToast(`📞 ${msg.started_name} started a call in #${channels.find(c=>c.id===msg.channel_id)?.name||'channel'}`);
+      break;
+    }
+
+    case 'call_ended': {
+      if (activeType === 'channel' && activeId === msg.channel_id) {
+        document.getElementById('callBar')?.classList.remove('visible');
+      }
+      break;
+    }
+
+    case 'system_msg': {
+      // Inline system notification (e.g. reminder set confirmation)
+      const div = document.createElement('div');
+      div.style.cssText = 'text-align:center;font-size:.75rem;color:var(--text-muted);padding:6px 0;font-style:italic;';
+      div.textContent = msg.message;
+      messagesWrap?.appendChild(div);
+      break;
+    }
   }
 }
 
@@ -545,10 +580,30 @@ async function openChannel(ch) {
     _updateVoltTargetBtn();
   }
   // Show new buttons for channel context
-  ['membersBtn', 'webhooksHeaderBtn', 'exportBtn'].forEach(id => {
+  ['membersBtn', 'webhooksHeaderBtn', 'exportBtn', 'startCallBtn', 'fileBrowserBtn'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = '';
   });
+  // Readonly / archived channel UI
+  const readonlyBar = document.getElementById('readonlyBar');
+  const msgInputEl  = document.getElementById('msgInput');
+  const sendBtnEl   = document.getElementById('sendBtn');
+  if (ch.archived) {
+    chatTitle.textContent = '🗃 ' + ch.name + ' [archived]';
+    if (readonlyBar) { readonlyBar.textContent = '🗃 This channel has been archived.'; readonlyBar.classList.add('visible'); }
+    if (msgInputEl) { msgInputEl.disabled = true; msgInputEl.placeholder = 'Channel archived'; }
+    if (sendBtnEl)  sendBtnEl.disabled = true;
+  } else if (ch.readonly && user.role === 'member') {
+    if (readonlyBar) { readonlyBar.innerHTML = '<i class="fa-solid fa-lock"></i> This channel is read-only — only moderators can post.'; readonlyBar.classList.add('visible'); }
+    if (msgInputEl) { msgInputEl.disabled = true; msgInputEl.placeholder = 'Read-only channel'; }
+    if (sendBtnEl)  sendBtnEl.disabled = true;
+  } else {
+    if (readonlyBar)  readonlyBar.classList.remove('visible');
+    if (msgInputEl) { msgInputEl.disabled = false; msgInputEl.placeholder = `Message ${ch.name}`; }
+    if (sendBtnEl)  sendBtnEl.disabled = false;
+  }
+  // Reset call bar on channel switch
+  document.getElementById('callBar')?.classList.remove('visible');
   // Restore draft
   restoreDraft();
   await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id), loadChannelPolls(ch.id)]);
@@ -2499,8 +2554,16 @@ window.toggleTask = async function(id, btn) {
 function renderMarkdown(rawText) {
   if (!rawText) return '';
   let s = esc(rawText);
-  // Code blocks  ```…```
-  s = s.replace(/```([\s\S]*?)```/g, (_m, code) => `<pre style="background:var(--bg-input);padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:.8rem;font-family:monospace;margin-top:4px;">${code.trim()}</pre>`);
+  // Code blocks  ```lang\n…```  (with syntax highlighting via highlight.js)
+  s = s.replace(/```([a-z]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+    let highlighted = '';
+    try {
+      highlighted = lang && window.hljs && window.hljs.getLanguage(lang)
+        ? window.hljs.highlight(code.trim(), { language: lang }).value
+        : window.hljs ? window.hljs.highlightAuto(code.trim()).value : code.trim();
+    } catch(e) { highlighted = code.trim(); }
+    return `<pre class="hljs"><code>${highlighted}</code></pre>`;
+  });
   // Inline code  `…`
   s = s.replace(/`([^`]+)`/g, '<code style="background:var(--bg-input);padding:1px 5px;border-radius:4px;font-family:monospace;font-size:.85em;">$1</code>');
   // Bold   **…**
@@ -2527,7 +2590,9 @@ function initThemeToggle() {
   const cb  = document.getElementById('lightThemeCheckbox');
   const apply = (light) => {
     document.body.classList.toggle('light-theme', light);
-    if (btn) btn.textContent = light ? '🌞' : '🌙';
+    const btn = document.getElementById('themeToggleBtn');
+    if (btn) btn.innerHTML = light ? '<i class="fa-regular fa-sun"></i>' : '<i class="fa-regular fa-moon"></i>';
+    const cb  = document.getElementById('lightThemeCheckbox');
     if (cb)  cb.checked = light;
     localStorage.setItem('synctact_theme', light ? 'light' : 'dark');
   };
@@ -2973,7 +3038,394 @@ async function openMembersModal() {
 // ── Augment openChannel for new buttons + draft handling ─────────────────────
 // (openChannel already patched inline above to show new buttons + restore draft)
 
-// ── Markdown applied via direct edit to appendMessage above ─────────────────
+// ── Mobile sidebar ────────────────────────────────────────────────────────────
+function initMobileSidebar() {
+  const btn     = document.getElementById('hamburgerBtn');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  if (!btn || !sidebar) return;
+  const open  = () => { sidebar.classList.add('mobile-open');  overlay.classList.add('visible');    btn.innerHTML = '<i class="fa-solid fa-xmark"></i>'; };
+  const close = () => { sidebar.classList.remove('mobile-open'); overlay.classList.remove('visible'); btn.innerHTML = '<i class="fa-solid fa-bars"></i>'; };
+  btn.addEventListener('click', () => sidebar.classList.contains('mobile-open') ? close() : open());
+  overlay.addEventListener('click', close);
+}
+
+// ── Notification sounds ────────────────────────────────────────────────────────
+let _soundsEnabled = localStorage.getItem('synctact_sounds') !== 'off';
+function playSound(type) {
+  if (!_soundsEnabled) return;
+  const ids = { message: 'sndMessage', mention: 'sndMention', callIn: 'sndCallIn', notif: 'sndNotif' };
+  const el = document.getElementById(ids[type] || 'sndNotif');
+  if (!el) return;
+  el.currentTime = 0;
+  el.play().catch(() => {});
+}
+function initNotificationSounds() {
+  // Hook into channel_message to play sound
+  const origHandle = window.handleServerMsg;
+  if (!origHandle) return;
+  // No re-wrap needed — playSound is called inside the switch cases
+}
+
+// ── Reminder polling ──────────────────────────────────────────────────────────
+function initReminderPoll() {
+  async function checkReminders() {
+    try {
+      const res = await authFetch('/remind/pending');
+      if (!res.ok) return;
+      const due = await res.json();
+      due.forEach(r => {
+        showToast(`⏰ Reminder: ${r.content}`, 'info', 8000);
+        playSound('notif');
+      });
+    } catch(e) {}
+  }
+  setInterval(checkReminders, 60_000);
+  setTimeout(checkReminders, 5_000); // check soon after login
+}
+
+// ── GIF Picker ────────────────────────────────────────────────────────────────
+// Uses Tenor v2 — replace TENOR_KEY with your own key or set "" for trending only
+const TENOR_KEY = '';
+function openGifPicker() {
+  document.getElementById('gifOverlay').classList.remove('hidden');
+  document.getElementById('gifSearch').value = '';
+  fetchGifs('trending');
+}
+async function fetchGifs(query) {
+  const grid = document.getElementById('gifGrid');
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);font-size:.8rem;">Loading…</div>';
+  try {
+    const endpoint = query === 'trending'
+      ? `https://tenor.googleapis.com/v2/featured?key=${TENOR_KEY||'LIVDSRZULELA'}&limit=18&media_filter=gif`
+      : `https://tenor.googleapis.com/v2/search?key=${TENOR_KEY||'LIVDSRZULELA'}&q=${encodeURIComponent(query)}&limit=18&media_filter=gif`;
+    const r = await fetch(endpoint);
+    const d = await r.json();
+    grid.innerHTML = '';
+    (d.results || []).forEach(item => {
+      const url = item.media_formats?.gif?.url || item.url;
+      const img = document.createElement('img');
+      img.src = item.media_formats?.tinygif?.url || url;
+      img.className = 'gif-thumb';
+      img.title = item.content_description || '';
+      img.addEventListener('click', () => {
+        document.getElementById('gifOverlay').classList.add('hidden');
+        wsSend({ type: 'channel_message', channel_id: activeId, content: '', file_url: url, file_name: 'gif' });
+      });
+      grid.appendChild(img);
+    });
+    if (!grid.children.length) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);">No results</div>';
+  } catch(e) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);">Failed to load GIFs</div>';
+  }
+}
+
+// ── File Browser ──────────────────────────────────────────────────────────────
+function toggleFileBrowser() {
+  const panel = document.getElementById('fileBrowserPanel');
+  if (!panel) return;
+  const isOpen = !panel.classList.contains('hidden');
+  if (isOpen) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  loadFileBrowser();
+}
+async function loadFileBrowser() {
+  const list = document.getElementById('fbList');
+  if (!list) return;
+  if (activeType !== 'channel' || !activeId) {
+    list.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:12px;text-align:center;">Open a channel first</div>';
+    return;
+  }
+  list.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:12px;">Loading…</div>';
+  const res = await authFetch(`/files/${activeId}`);
+  if (!res.ok) { list.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:12px;">Failed to load</div>'; return; }
+  const files = await res.json();
+  if (!files.length) { list.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:12px;text-align:center;">No files shared yet</div>'; return; }
+  const extIcon = n => {
+    if (!n) return 'fa-file';
+    const ext = n.split('.').pop().toLowerCase();
+    if (['jpg','jpeg','png','gif','webp','svg'].includes(ext)) return 'fa-file-image';
+    if (['mp4','webm','mov'].includes(ext)) return 'fa-file-video';
+    if (['mp3','wav','ogg'].includes(ext)) return 'fa-file-audio';
+    if (['pdf'].includes(ext)) return 'fa-file-pdf';
+    if (['zip','rar','gz'].includes(ext)) return 'fa-file-zipper';
+    if (['doc','docx'].includes(ext)) return 'fa-file-word';
+    if (['xls','xlsx'].includes(ext)) return 'fa-file-excel';
+    return 'fa-file';
+  };
+  list.innerHTML = files.map(f => `
+    <a class="fb-item" href="${API+f.file_url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
+      <i class="fa-solid ${extIcon(f.file_name)} fb-icon"></i>
+      <span class="fb-name" title="${esc(f.file_name||'')}"> ${esc(f.file_name||'file')}</span>
+      <span class="fb-date">${new Date(f.ts).toLocaleDateString()}</span>
+    </a>`).join('');
+}
+
+// ── Events / Calendar ─────────────────────────────────────────────────────────
+async function openEventsModal() {
+  const overlay = document.getElementById('eventsOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  await loadEvents();
+}
+async function loadEvents() {
+  const list = document.getElementById('eventsList');
+  if (!list) return;
+  const params = activeType === 'channel' ? `?channel_id=${activeId}` : '';
+  const res = await authFetch(`/events${params}`);
+  if (!res.ok) { list.innerHTML = '<div style="color:var(--text-muted);">Failed to load</div>'; return; }
+  const events = await res.json();
+  if (!events.length) { list.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;text-align:center;padding:14px;">No events yet.</div>'; return; }
+  const yesUsers  = e => e.rsvps.filter(r=>r.status==='yes').map(r=>r.name).join(', ') || '—';
+  const maybeUsers= e => e.rsvps.filter(r=>r.status==='maybe').map(r=>r.name).join(', ') || '—';
+  list.innerHTML = events.map(e => `
+    <div class="event-card">
+      <div class="event-title">${esc(e.title)}</div>
+      ${e.description ? `<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:4px;">${esc(e.description)}</div>` : ''}
+      <div class="event-time"><i class="fa-regular fa-clock"></i> ${new Date(e.starts_at).toLocaleString()}${e.ends_at ? ' → ' + new Date(e.ends_at).toLocaleTimeString() : ''}</div>
+      <div class="event-rsvps">
+        <button class="rsvp-btn yes" onclick="rsvpEvent(${e.id},'yes')"><i class="fa-solid fa-check"></i> Yes (${e.rsvps.filter(r=>r.status==='yes').length})</button>
+        <button class="rsvp-btn maybe" onclick="rsvpEvent(${e.id},'maybe')"><i class="fa-solid fa-circle-question"></i> Maybe (${e.rsvps.filter(r=>r.status==='maybe').length})</button>
+        <button class="rsvp-btn no" onclick="rsvpEvent(${e.id},'no')"><i class="fa-solid fa-xmark"></i> No (${e.rsvps.filter(r=>r.status==='no').length})</button>
+        ${e.creator_id===user.id ? `<button class="rsvp-btn" onclick="deleteEvent(${e.id})" style="margin-left:auto;color:var(--text-muted);border-color:var(--border);" title="Delete"><i class="fa-solid fa-trash"></i></button>` : ''}
+      </div>
+    </div>`).join('');
+}
+async function rsvpEvent(id, status) {
+  await authFetch(`/events/${id}/rsvp?status=${status}`, { method: 'POST' });
+  await loadEvents();
+}
+async function deleteEvent(id) {
+  if (!confirm('Delete this event?')) return;
+  await authFetch(`/events/${id}`, { method: 'DELETE' });
+  await loadEvents();
+}
+async function createCalendarEvent() {
+  const title = document.getElementById('eventTitle').value.trim();
+  const desc  = document.getElementById('eventDesc').value.trim();
+  const start = document.getElementById('eventStart').value;
+  const end   = document.getElementById('eventEnd').value;
+  if (!title || !start) { showToast('Title and start time required', 'error'); return; }
+  const body = { title, description: desc || null, starts_at: new Date(start).toISOString(), channel_id: activeType === 'channel' ? activeId : null };
+  if (end) body.ends_at = new Date(end).toISOString();
+  const res = await authFetch('/events', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if (!res.ok) { showToast('Failed to create event', 'error'); return; }
+  document.getElementById('eventTitle').value = '';
+  document.getElementById('eventDesc').value  = '';
+  document.getElementById('eventStart').value = '';
+  document.getElementById('eventEnd').value   = '';
+  showToast('Event created!');
+  await loadEvents();
+}
+
+// ── Message Templates ─────────────────────────────────────────────────────────
+async function openTemplatesModal() {
+  document.getElementById('templatesOverlay')?.classList.remove('hidden');
+  await loadTemplates();
+}
+async function loadTemplates() {
+  const list = document.getElementById('templatesList');
+  if (!list) return;
+  const res = await authFetch('/templates');
+  if (!res.ok) { list.innerHTML = '<div style="color:var(--text-muted);">Failed to load</div>'; return; }
+  const tmpl = await res.json();
+  if (!tmpl.length) { list.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;text-align:center;padding:12px;">No templates yet.</div>'; return; }
+  list.innerHTML = tmpl.map(t => `
+    <div class="template-item">
+      <span class="t-title">${esc(t.title)}</span>
+      <span class="t-content">${esc(t.content)}</span>
+      <button class="use-template-btn" onclick="useTemplate(${JSON.stringify(t.content).replace(/"/g,'&quot;')})">Use</button>
+      <button class="del-template-btn" onclick="deleteTemplate(${t.id})" title="Delete"><i class="fa-solid fa-trash"></i></button>
+    </div>`).join('');
+}
+function useTemplate(content) {
+  const inp = document.getElementById('msgInput');
+  if (inp) { inp.value = content; inp.focus(); }
+  document.getElementById('templatesOverlay')?.classList.add('hidden');
+}
+async function saveTemplate() {
+  const title   = document.getElementById('templateTitle').value.trim();
+  const content = document.getElementById('templateContent').value.trim();
+  if (!title || !content) { showToast('Title and content required', 'error'); return; }
+  const res = await authFetch('/templates', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title, content }) });
+  if (!res.ok) { showToast('Failed to save', 'error'); return; }
+  document.getElementById('templateTitle').value   = '';
+  document.getElementById('templateContent').value = '';
+  showToast('Template saved!');
+  await loadTemplates();
+}
+async function deleteTemplate(id) {
+  await authFetch(`/templates/${id}`, { method: 'DELETE' });
+  await loadTemplates();
+}
+
+// ── User Blocking ─────────────────────────────────────────────────────────────
+async function openBlocksModal() {
+  document.getElementById('blocksOverlay')?.classList.remove('hidden');
+  const list = document.getElementById('blocksList');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:12px;">Loading…</div>';
+  const res = await authFetch('/blocks');
+  if (!res.ok) { list.innerHTML = '<div style="color:var(--text-muted);">Failed to load</div>'; return; }
+  const blocks = await res.json();
+  if (!blocks.length) { list.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;text-align:center;padding:14px;">No blocked users.</div>'; return; }
+  list.innerHTML = blocks.map(b => `
+    <div class="session-item">
+      <span class="si-device">${esc(b.name)}</span>
+      <button class="session-revoke" onclick="unblockUser(${b.blocked_id},this)">Unblock</button>
+    </div>`).join('');
+}
+async function blockUser(uid, name) {
+  const res = await authFetch(`/blocks/${uid}`, { method: 'POST' });
+  if (res.ok) showToast(`${name} blocked`);
+}
+async function unblockUser(uid, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const res = await authFetch(`/blocks/${uid}`, { method: 'DELETE' });
+  if (res.ok) { showToast('Unblocked'); await openBlocksModal(); }
+}
+
+// ── Badges ────────────────────────────────────────────────────────────────────
+async function loadAndShowBadges(userId, containerEl) {
+  if (!containerEl) return;
+  const res = await authFetch(`/badges/${userId}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  containerEl.innerHTML = data.badges.map(b =>
+    `<span class="badge-pill" style="background:${b.color}22;color:${b.color};border:1px solid ${b.color}55;">
+      <i class="${b.icon}"></i> ${esc(b.label)}
+    </span>`).join('');
+}
+
+// ── Video / Voice Call ────────────────────────────────────────────────────────
+async function startCall() {
+  if (activeType !== 'channel') { showToast('Open a channel to start a call', 'error'); return; }
+  const res = await authFetch(`/channels/${activeId}/call`, { method: 'POST' });
+  if (!res.ok) { showToast('Failed to start call', 'error'); return; }
+  const { room_code } = await res.json();
+  window.open(`/meeting.html?room=${room_code}&name=${encodeURIComponent(user.name)}`, '_blank');
+}
+async function endCall() {
+  if (activeType !== 'channel') return;
+  await authFetch(`/channels/${activeId}/call`, { method: 'DELETE' });
+  document.getElementById('callBar')?.classList.remove('visible');
+}
+
+// ── Channel archive / readonly (mod controls) ──────────────────────────────
+async function toggleChannelArchive() {
+  const ch = channels.find(c => c.id === activeId);
+  if (!ch) return;
+  const newVal = !ch.archived;
+  const res = await authFetch(`/channels/${activeId}/settings`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ archived: newVal }),
+  });
+  if (res.ok) { ch.archived = newVal; showToast(newVal ? 'Channel archived' : 'Channel unarchived'); openChannel(ch); renderChannelList(); }
+}
+async function toggleChannelReadonly() {
+  const ch = channels.find(c => c.id === activeId);
+  if (!ch) return;
+  const newVal = !ch.readonly;
+  const res = await authFetch(`/channels/${activeId}/settings`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ readonly: newVal }),
+  });
+  if (res.ok) { ch.readonly = newVal; showToast(newVal ? 'Channel set to read-only' : 'Channel open for posting'); openChannel(ch); }
+}
+
+// ── Server Discovery ────────────────────────────────────────────────────────
+async function loadDiscovery(containerEl) {
+  if (!containerEl) return;
+  containerEl.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:12px;text-align:center;">Loading channels…</div>';
+  const res = await fetch(`${API}/discovery`);
+  if (!res.ok) { containerEl.innerHTML = '<div style="color:var(--text-muted);">Failed to load</div>'; return; }
+  const list = await res.json();
+  containerEl.innerHTML = list.map(ch => `
+    <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;cursor:pointer;" onclick="window.location.href='chat.html'">
+      <div style="font-weight:700;font-size:.9rem;"># ${esc(ch.name)}</div>
+      ${ch.description ? `<div style="font-size:.78rem;color:var(--text-muted);margin-top:2px;">${esc(ch.description)}</div>` : ''}
+      <div style="font-size:.7rem;color:var(--text-muted);margin-top:6px;">${ch.message_count} messages</div>
+    </div>`).join('');
+}
+
+// ── Wire all new feature buttons ───────────────────────────────────────────
+function initNewFeatureHandlers2() {
+  // Call buttons
+  document.getElementById('startCallBtn')?.addEventListener('click', startCall);
+  document.getElementById('callJoinBtn')?.addEventListener('click', () => {
+    const room = `ch${activeId}`;
+    window.open(`/meeting.html?room=${room}&name=${encodeURIComponent(user.name)}`, '_blank');
+  });
+  document.getElementById('callEndBtn')?.addEventListener('click', endCall);
+
+  // File browser
+  document.getElementById('fileBrowserBtn')?.addEventListener('click', toggleFileBrowser);
+  document.getElementById('closeFBBtn')?.addEventListener  ('click', () => document.getElementById('fileBrowserPanel')?.classList.add('hidden'));
+
+  // Templates
+  document.getElementById('templatesBtn')?.addEventListener('click', openTemplatesModal);
+  document.getElementById('closeTemplatesBtn')?.addEventListener('click', () => document.getElementById('templatesOverlay')?.classList.add('hidden'));
+  document.getElementById('saveTemplateBtn')?.addEventListener('click', saveTemplate);
+
+  // Events
+  document.getElementById('eventsBtn')?.addEventListener('click', openEventsModal);
+  document.getElementById('closeEventsBtn')?.addEventListener('click', () => document.getElementById('eventsOverlay')?.classList.add('hidden'));
+  document.getElementById('createEventBtn')?.addEventListener('click', createCalendarEvent);
+
+  // GIF picker
+  document.getElementById('gifOverlay')?.addEventListener('click', e => { if (e.target === document.getElementById('gifOverlay')) document.getElementById('gifOverlay').classList.add('hidden'); });
+  document.getElementById('closeGifBtn')?.addEventListener('click', () => document.getElementById('gifOverlay')?.classList.add('hidden'));
+  document.getElementById('gifSearchBtn')?.addEventListener('click', () => fetchGifs(document.getElementById('gifSearch').value.trim() || 'trending'));
+  document.getElementById('gifSearch')?.addEventListener('keydown', e => { if (e.key === 'Enter') fetchGifs(e.target.value.trim() || 'trending'); });
+  // Add GIF button to input area
+  const inputActions = document.querySelector('.input-actions');
+  if (inputActions && !document.getElementById('gifBtn')) {
+    const gifBtn = document.createElement('button');
+    gifBtn.id = 'gifBtn'; gifBtn.className = 'ia-btn'; gifBtn.title = 'GIF';
+    gifBtn.innerHTML = '<i class="fa-solid fa-film"></i>';
+    gifBtn.addEventListener('click', openGifPicker);
+    inputActions.insertBefore(gifBtn, inputActions.firstChild);
+  }
+
+  // Blocked users
+  document.getElementById('closeBlocksBtn')?.addEventListener('click', () => document.getElementById('blocksOverlay')?.classList.add('hidden'));
+
+  // Add to settings sidebar entry
+  const sidebarScroll = document.querySelector('.sidebar-scroll');
+  if (sidebarScroll && !document.getElementById('discoverySidebarItem')) {
+    const section = document.createElement('div');
+    section.className = 'sidebar-section';
+    section.style.marginTop = '12px';
+    section.innerHTML = `<div class="section-header"><span>Tools</span></div>
+      <ul class="channel-list">
+        <li><button id="discoverySidebarItem" onclick="openEventsModal()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.82rem;padding:3px 14px;display:block;width:100%;text-align:left;"><i class="fa-regular fa-calendar" style="margin-right:6px;"></i>Events</button></li>
+        <li><button onclick="openTemplatesModal()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.82rem;padding:3px 14px;display:block;width:100%;text-align:left;"><i class="fa-solid fa-rectangle-list" style="margin-right:6px;"></i>Templates</button></li>
+        <li><button onclick="openBlocksModal()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.82rem;padding:3px 14px;display:block;width:100%;text-align:left;"><i class="fa-solid fa-ban" style="margin-right:6px;"></i>Blocked Users</button></li>
+      </ul>`;
+    sidebarScroll.appendChild(section);
+  }
+
+  // Sound toggle in appearance settings tab
+  const soundToggleWrap = document.getElementById('soundToggleWrap');
+  if (soundToggleWrap) {
+    soundToggleWrap.innerHTML = `
+      <div class="sound-toggle">
+        <label class="toggle-switch">
+          <input type="checkbox" id="soundToggle" ${_soundsEnabled ? 'checked' : ''} />
+          <span class="slider"></span>
+        </label>
+        <span style="font-size:.82rem;">Notification sounds</span>
+      </div>`;
+    document.getElementById('soundToggle')?.addEventListener('change', e => {
+      _soundsEnabled = e.target.checked;
+      localStorage.setItem('synctact_sounds', _soundsEnabled ? 'on' : 'off');
+    });
+  }
+
+  // Notification sounds on channel_message (play sound via wrapper)
+  document.addEventListener('synctact_new_msg', () => playSound('message'));
+  document.addEventListener('synctact_mention', () => playSound('mention'));
+}
 
 if (!user || !token) {
   document.getElementById('authGate').classList.remove('hidden');
