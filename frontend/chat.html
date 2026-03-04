@@ -945,6 +945,36 @@
       <input id="searchInput" placeholder="Search messages…" autocomplete="off" />
       <button class="close-search" id="closeSearchBtn">✕</button>
     </div>
+    <!-- Advanced filters row -->
+    <div id="searchFilters" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px 4px;border-bottom:1px solid var(--border);">
+      <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:120px;">
+        <label style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">From</label>
+        <input id="searchFilterUser" placeholder="Username…" autocomplete="off"
+          style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);font-size:.8rem;outline:none;" />
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:120px;">
+        <label style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">Channel</label>
+        <select id="searchFilterChannel"
+          style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);font-size:.8rem;outline:none;">
+          <option value="">All channels</option>
+        </select>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px;min-width:110px;">
+        <label style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">After</label>
+        <input id="searchFilterAfter" type="date"
+          style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);font-size:.8rem;outline:none;" />
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px;min-width:110px;">
+        <label style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">Before</label>
+        <input id="searchFilterBefore" type="date"
+          style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);font-size:.8rem;outline:none;" />
+      </div>
+      <div style="display:flex;align-items:flex-end;">
+        <button id="searchFilterClearBtn"
+          style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--text-muted);font-size:.75rem;cursor:pointer;"
+          title="Clear filters">Clear</button>
+      </div>
+    </div>
     <div class="search-results" id="searchResults">
       <div class="search-empty">Type to search across all channels and DMs</div>
     </div>

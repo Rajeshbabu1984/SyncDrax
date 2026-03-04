@@ -1788,6 +1788,10 @@ def pinned_messages(
 @app.get("/chat/search")
 def search_messages(
     q: str = Query(..., min_length=1),
+    from_user: Optional[str] = Query(None),
+    channel_id: Optional[int] = Query(None),
+    after: Optional[str] = Query(None),   # ISO date string YYYY-MM-DD
+    before: Optional[str] = Query(None),  # ISO date string YYYY-MM-DD
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
@@ -1795,7 +1799,24 @@ def search_messages(
     stmt = select(ChatMessage).where(
         ChatMessage.content.contains(q),
         ChatMessage.parent_id == None,  # noqa: E711  top-level only
-    ).order_by(ChatMessage.created_at.desc()).limit(40)
+    )
+    if from_user:
+        stmt = stmt.where(ChatMessage.sender_name.ilike(f"%{from_user}%"))
+    if channel_id:
+        stmt = stmt.where(ChatMessage.channel_id == channel_id)
+    if after:
+        try:
+            after_dt = datetime.fromisoformat(after)
+            stmt = stmt.where(ChatMessage.created_at >= after_dt)
+        except ValueError:
+            pass
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before) + timedelta(days=1)
+            stmt = stmt.where(ChatMessage.created_at <= before_dt)
+        except ValueError:
+            pass
+    stmt = stmt.order_by(ChatMessage.created_at.desc()).limit(60)
     msgs = session.exec(stmt).all()
     return [_msg_dict(m) for m in msgs]
 

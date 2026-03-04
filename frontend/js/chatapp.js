@@ -176,14 +176,26 @@ async function initChat() {
   // Search
   document.getElementById('searchBtn').addEventListener('click', openSearch);
   document.getElementById('closeSearchBtn').addEventListener('click', closeSearch);
-  document.getElementById('searchInput').addEventListener('input', e => {
+  const _triggerSearch = () => {
     clearTimeout(searchTimeout);
-    const q = e.target.value.trim();
+    const q = document.getElementById('searchInput').value.trim();
     if (q.length < 2) {
       document.getElementById('searchResults').innerHTML = '<div class="search-empty">Type to search across all channels and DMs</div>';
       return;
     }
     searchTimeout = setTimeout(() => doSearch(q), 350);
+  };
+  document.getElementById('searchInput').addEventListener('input', _triggerSearch);
+  ['searchFilterUser','searchFilterChannel','searchFilterAfter','searchFilterBefore'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', _triggerSearch);
+    document.getElementById(id)?.addEventListener('input',  _triggerSearch);
+  });
+  document.getElementById('searchFilterClearBtn')?.addEventListener('click', () => {
+    ['searchFilterUser','searchFilterAfter','searchFilterBefore'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    const sel = document.getElementById('searchFilterChannel'); if (sel) sel.value = '';
+    _triggerSearch();
   });
   document.getElementById('searchOverlay').addEventListener('click', e => {
     if (e.target === e.currentTarget) closeSearch();
@@ -571,7 +583,7 @@ async function openChannel(ch) {
   if (muteBtn) {
     muteBtn.style.display = '';
     const isMuted = notifPrefs[ch.id]?.muted;
-    muteBtn.textContent = isMuted ? '🔕' : '🔔';
+    muteBtn.innerHTML = isMuted ? '<i class="fa-solid fa-bell-slash"></i>' : '<i class="fa-regular fa-bell"></i>';
     muteBtn.title = isMuted ? 'Unmute notifications' : 'Mute notifications for this channel';
   }
   // Always show Volt toggle in channels (server enforces ownership on broadcast)
@@ -791,6 +803,7 @@ function appendMessage(m, initial) {
     ${isSender && !m.bot_name ? `<button class="react-btn" onclick="startEditMessage(${m.id})" title="Edit">✏️</button>` : ''}
     ${canDelete ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
     ${(activeChannel && activeChannel.created_by === user.id && !isSender && !m.bot_name) ? `<button class="mod-btn" onclick="kickUser(${m.sender_id},${m.channel_id})" title="Kick from channel">🥢</button><button class="mod-btn" onclick="muteUser(${m.sender_id},${m.channel_id})" title="Mute in channel">🔇</button>` : ''}
+    ${(!isSender && !m.bot_name) ? `<button class="react-btn ctx-block" onclick="blockUser(${m.sender_id},'${(m.sender_name||'').replace(/'/g,'\\\'')}')" title="Block user"><i class="fa-solid fa-ban"></i></button>` : ''}
   </span>`;
   }
   inner += `<div class="reactions-row"></div>`;
@@ -1362,8 +1375,10 @@ function renderChannelList() {
 
 function _buildChannelLi(ch) {
   const li = document.createElement('li');
-  li.className = `ch-item${activeType === 'channel' && activeId === ch.id ? ' active' : ''}`;
-  li.innerHTML = `<span class="ch-prefix">${ch.name.charAt(0) === '#' ? '' : '#'}</span><span class="ch-name">${esc(ch.name)}</span>`;
+  li.className = `ch-item${activeType === 'channel' && activeId === ch.id ? ' active' : ''}${ch.archived ? ' ch-archived' : ''}`;
+  const roIcon  = ch.readonly  ? `<i class="fa-solid fa-lock ch-readonly-ico" title="Read-only" style="font-size:.65rem;color:var(--text-muted);margin-left:4px;opacity:.7;"></i>` : '';
+  const arcIcon = ch.archived  ? `<i class="fa-solid fa-box-archive ch-archive-ico" title="Archived" style="font-size:.65rem;color:var(--text-muted);margin-left:4px;opacity:.7;"></i>` : '';
+  li.innerHTML = `<span class="ch-prefix">${ch.name.charAt(0) === '#' ? '' : '#'}</span><span class="ch-name">${esc(ch.name)}</span>${roIcon}${arcIcon}`;
   if (ch.created_by === user.id) {
     li.innerHTML += `<button class="ch-del-btn" onclick="deleteChannel(event,${ch.id});" title="Delete">✕</button>`;
   }
@@ -1814,10 +1829,10 @@ async function toggleChannelMute(channelId) {
   notifPrefs[channelId] = { muted: newVal };
   const btn = document.getElementById('muteChannelBtn');
   if (btn) {
-    btn.textContent = newVal ? '🔕' : '🔔';
+    btn.innerHTML = newVal ? '<i class="fa-solid fa-bell-slash"></i>' : '<i class="fa-regular fa-bell"></i>';
     btn.title = newVal ? 'Unmute notifications' : 'Mute notifications for this channel';
   }
-  showToast(newVal ? '🔕 Channel muted' : '🔔 Channel unmuted');
+  showToast(newVal ? 'Channel muted' : 'Channel unmuted');
 }
 
 function initMuteHandler() {
@@ -2053,6 +2068,17 @@ function openSearch() {
   document.getElementById('searchOverlay').classList.remove('hidden');
   document.getElementById('searchInput').value = '';
   document.getElementById('searchResults').innerHTML = '<div class="search-empty">Type to search across all channels and DMs</div>';
+  // Populate channel dropdown
+  const sel = document.getElementById('searchFilterChannel');
+  if (sel) {
+    sel.innerHTML = '<option value="">All channels</option>';
+    channels.forEach(ch => {
+      const opt = document.createElement('option');
+      opt.value = ch.id;
+      opt.textContent = '#' + ch.name;
+      sel.appendChild(opt);
+    });
+  }
   setTimeout(() => document.getElementById('searchInput').focus(), 50);
 }
 
@@ -2061,7 +2087,18 @@ function closeSearch() {
 }
 
 async function doSearch(q) {
-  const res = await authFetch(`/chat/search?q=${encodeURIComponent(q)}`);
+  const fromUser   = (document.getElementById('searchFilterUser')?.value   || '').trim();
+  const channelId  = document.getElementById('searchFilterChannel')?.value  || '';
+  const afterDate  = document.getElementById('searchFilterAfter')?.value    || '';
+  const beforeDate = document.getElementById('searchFilterBefore')?.value   || '';
+
+  let url = `/chat/search?q=${encodeURIComponent(q)}`;
+  if (fromUser)   url += `&from_user=${encodeURIComponent(fromUser)}`;
+  if (channelId)  url += `&channel_id=${channelId}`;
+  if (afterDate)  url += `&after=${encodeURIComponent(afterDate)}`;
+  if (beforeDate) url += `&before=${encodeURIComponent(beforeDate)}`;
+
+  const res = await authFetch(url);
   const resultsEl = document.getElementById('searchResults');
   if (!res.ok) { resultsEl.innerHTML = '<div class="search-empty">Search failed</div>'; return; }
   const msgs = await res.json();
