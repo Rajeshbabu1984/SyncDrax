@@ -640,7 +640,7 @@
   <aside class="sidebar">
     <div class="ws-header">
       <div class="ws-logo"><img src="images/logo.png" alt="SyncTact" style="height:28px;width:auto;"> <span>SyncTact</span></div>
-      <button class="theme-toggle" id="themeToggleBtn" title="Toggle light/dark theme">🌙</button>
+      <button class="theme-toggle" id="themeToggleBtn" title="Toggle light/dark theme"><i class="fa-regular fa-moon"></i></button>
       <a href="index.html" class="btn-home" title="Back to Home"><i class="fa-solid fa-house"></i></a>
     </div>
 
@@ -698,7 +698,7 @@
         <option value="dnd">🔴 DND</option>
         <option value="offline">⚫ Offline</option>
       </select>
-      <button class="ia-btn" id="settingsBtn" title="Settings" style="padding:4px 7px;">⚙️</button>
+      <button class="ia-btn" id="settingsBtn" title="Settings" style="padding:4px 7px;"><i class="fa-solid fa-gear"></i></button>
     </div>
   </aside>
 
@@ -708,15 +708,15 @@
       <span id="chatTitle" class="chat-title"># general</span>
       <span id="chatDesc" class="chat-desc"></span>
       <div class="header-actions">
-        <button class="ia-btn" id="voltTargetBtn" title="Volt: only visible to me" style="display:none;font-size:1rem;">🔒</button>
-        <button class="ia-btn" id="inviteBtn" title="Invite link" style="display:none">🔗</button>
+        <button class="ia-btn" id="voltTargetBtn" title="Volt: only visible to me" style="display:none;"><i class="fa-solid fa-lock"></i></button>
+        <button class="ia-btn" id="inviteBtn" title="Invite link" style="display:none"><i class="fa-solid fa-link"></i></button>
         <button class="ia-btn" id="membersBtn" title="Channel members" style="display:none"><i class="fa-solid fa-users"></i></button>
-        <button class="ia-btn" id="galleryBtn" title="Media gallery" style="display:none">🖼️</button>
-        <button class="ia-btn" id="muteChannelBtn" title="Mute notifications for this channel" style="display:none">🔔</button>
-        <button class="ia-btn" id="webhooksHeaderBtn" title="Webhooks" style="display:none">🔌</button>
-        <button class="ia-btn" id="exportBtn" title="Export chat history" style="display:none">📥</button>
+        <button class="ia-btn" id="galleryBtn" title="Media gallery" style="display:none"><i class="fa-regular fa-image"></i></button>
+        <button class="ia-btn" id="muteChannelBtn" title="Mute notifications for this channel" style="display:none"><i class="fa-regular fa-bell"></i></button>
+        <button class="ia-btn" id="webhooksHeaderBtn" title="Webhooks" style="display:none"><i class="fa-solid fa-plug"></i></button>
+        <button class="ia-btn" id="exportBtn" title="Export chat history" style="display:none"><i class="fa-solid fa-file-arrow-down"></i></button>
         <button class="ia-btn" id="auditLogBtn" title="Audit log"><i class="fa-solid fa-shield-halved"></i></button>
-        <button class="ia-btn" id="notifBtn" title="Enable push notifications">🔔</button>
+        <button class="ia-btn" id="notifBtn" title="Enable push notifications"><i class="fa-regular fa-bell"></i></button>
         <button class="ia-btn" id="createPollBtn" title="Create poll"><i class="fa-solid fa-chart-bar"></i></button>
         <button class="ia-btn" id="searchBtn" title="Search (Ctrl+K)"><i class="fa-solid fa-magnifying-glass"></i></button>
         <span id="pinnedBadge" class="pinned-badge hidden">📌 0 pinned</span>
@@ -731,8 +731,8 @@
       <div id="mentionDropdown" class="mention-dropdown hidden"></div>
       <div class="input-box">
         <div class="input-actions">
-          <button class="ia-btn" id="emojiInputBtn" title="Emoji">😊</button>
-          <button class="ia-btn" id="voiceRecordBtn" title="Voice message">🎤</button>
+          <button class="ia-btn" id="emojiInputBtn" title="Emoji"><i class="fa-regular fa-face-smile"></i></button>
+          <button class="ia-btn" id="voiceRecordBtn" title="Voice message"><i class="fa-solid fa-microphone"></i></button>
           <label class="ia-btn" for="fileInput" title="Attach file" style="cursor:pointer; display:flex; align-items:center;">
             <i class="fa-solid fa-paperclip"></i>
           </label>
@@ -964,7 +964,7 @@
     <div style="display:flex;gap:18px;align-items:center;margin-bottom:20px;">
       <div class="p-avatar" id="myProfileAvatar" style="width:60px;height:60px;border-radius:50%;flex-shrink:0;overflow:hidden;background:var(--purple);display:flex;align-items:center;justify-content:center;font-size:1.4rem;font-weight:700;border:3px solid var(--purple-l);">?</div>
       <div>
-        <label for="avatarFileInput" class="modal-btn primary" style="cursor:pointer;display:inline-block;padding:7px 14px;font-size:.8rem;">📷 Change Avatar</label>
+        <label for="avatarFileInput" class="modal-btn primary" style="cursor:pointer;display:inline-block;padding:7px 14px;font-size:.8rem;"><i class="fa-solid fa-camera"></i> Change Avatar</label>
         <input type="file" id="avatarFileInput" accept="image/*" hidden />
         <div style="font-size:.72rem;color:var(--text-muted);margin-top:5px;">Max 4 MB · PNG/JPG/GIF</div>
       </div>

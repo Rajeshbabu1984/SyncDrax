@@ -721,7 +721,7 @@ async def update_presence(body: dict, current_user: User = Depends(get_current_u
     user = session.get(User, current_user.id)
     user.presence = pres
     session.add(user); session.commit()
-    await manager.broadcast({"type": "user_status", "user_id": current_user.id, "presence": pres})
+    await _chat_broadcast({"type": "user_status", "user_id": current_user.id, "presence": pres})
     return {"ok": True, "presence": pres}
 
 
@@ -816,10 +816,11 @@ async def receive_webhook(token: str, body: dict, session: Session = Depends(get
     msg = ChatMessage(channel_id=wh.channel_id, sender_id=0, sender_name=sender,
                       content=content, bot_name=wh.name)
     session.add(msg); session.commit(); session.refresh(msg)
-    await manager.broadcast({"type": "new_message", "channel_id": wh.channel_id,
-                             "message": {"id": msg.id, "content": msg.content,
-                                         "sender_name": msg.sender_name, "bot_name": msg.bot_name,
-                                         "created_at": str(msg.created_at)}})
+    await _chat_broadcast({"type": "channel_message", "channel_id": wh.channel_id,
+                           "message": {"id": msg.id, "content": msg.content,
+                                       "sender_name": msg.sender_name, "sender_id": 0,
+                                       "bot_name": msg.bot_name,
+                                       "ts": str(msg.created_at), "reactions": {}}})
     return {"ok": True, "message_id": msg.id}
 
 
