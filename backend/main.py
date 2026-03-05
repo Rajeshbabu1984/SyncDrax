@@ -95,6 +95,7 @@ class User(SQLModel, table=True):
     presence:        str            = Field(default='online')   # 'online'|'away'|'dnd'|'offline'
     totp_secret:     Optional[str]  = Field(default=None)
     totp_enabled:    bool           = Field(default=False)
+    title:           Optional[str]  = Field(default=None)       # custom title e.g. "CEO & Founder"
     created_at:      datetime       = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -371,6 +372,7 @@ def migrate_db():
                 ('presence',     "ALTER TABLE user ADD COLUMN presence VARCHAR DEFAULT 'online'"),
                 ('totp_secret',  'ALTER TABLE user ADD COLUMN totp_secret VARCHAR DEFAULT NULL'),
                 ('totp_enabled', 'ALTER TABLE user ADD COLUMN totp_enabled BOOLEAN DEFAULT FALSE'),
+                ('title',        'ALTER TABLE user ADD COLUMN title VARCHAR DEFAULT NULL'),
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(ddl))
@@ -694,7 +696,8 @@ def me(current_user: User = Depends(get_current_user)):
         "role": getattr(current_user, "role", "member"),
         "presence": getattr(current_user, "presence", "online"),
         "totp_enabled": getattr(current_user, "totp_enabled", False),
-        "avatar": current_user.avatar,
+        "avatar_url": current_user.avatar_url,
+        "title": getattr(current_user, "title", None),
     }
 
 
@@ -1663,7 +1666,7 @@ def list_chat_users(
     session: Session = Depends(get_session),
 ):
     users = session.exec(select(User).where(User.id != current_user.id)).all()
-    return [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url, "status": u.status} for u in users]
+    return [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url, "status": u.status, "title": u.title} for u in users]
 
 
 @app.get("/chat/dm/{other_user_id}/messages")
@@ -2347,6 +2350,8 @@ def _user_profile_dict(u: User) -> dict:
         "avatar_url": u.avatar_url,
         "status":     u.status,
         "bio":        u.bio,
+        "title":      u.title,
+        "role":       u.role,
         "joined":     u.created_at.isoformat(),
     }
 
@@ -2360,6 +2365,7 @@ class ProfileUpdateRequest(BaseModel):
     name:   Optional[str] = None
     status: Optional[str] = None
     bio:    Optional[str] = None
+    title:  Optional[str] = None
 
 
 @app.patch("/users/me/profile")
@@ -2372,6 +2378,7 @@ async def update_my_profile(
     if body.name   is not None: u.name   = body.name.strip()[:64]
     if body.status is not None: u.status = body.status.strip()[:120]
     if body.bio    is not None: u.bio    = body.bio.strip()[:300]
+    if body.title  is not None: u.title  = body.title.strip()[:60] if body.title.strip() else None
     session.add(u); session.commit(); session.refresh(u)
     # Broadcast status change to all online users
     await _chat_broadcast({"type": "user_status", "user_id": u.id, "status": u.status, "name": u.name})

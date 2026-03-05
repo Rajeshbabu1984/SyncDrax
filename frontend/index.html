@@ -142,7 +142,7 @@
       <span style="color:var(--border)">�</span>
       <a href="chat.html" class="footer-link"><i class="fa-solid fa-comments" style="font-size:0.75em"></i> Team Chat</a>
       <span style="color:var(--border)">�</span>
-      <a href="admin.html" class="footer-link"><i class="fa-solid fa-shield-halved" style="font-size:0.75em"></i> Admin Panel</a>
+      <a href="admin.html" class="footer-link" id="adminFooterLink" style="display:none"><i class="fa-solid fa-shield-halved" style="font-size:0.75em"></i> Admin Panel</a>
     </div>
     <p class="footer-copy">� 2026 SyncTact. Built for teams that move fast.</p>
   </footer>
@@ -214,6 +214,10 @@
       const signInBtn  = document.getElementById('signInBtn');
       const signUpBtn  = document.getElementById('signUpBtn');
       const navLinks   = document.querySelector('.nav-links');
+      const adminLink  = document.getElementById('adminFooterLink');
+
+      // Show admin panel link only to admin/mod
+      if (adminLink) adminLink.style.display = (user && (user.role === 'admin' || user.role === 'mod')) ? '' : 'none';
 
       // Remove existing signed-in pill if any
       const existing = document.getElementById('navUserPill');

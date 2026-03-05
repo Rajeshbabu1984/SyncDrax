@@ -98,6 +98,13 @@ async function initChat() {
   userAvatar.textContent   = user.name.charAt(0).toUpperCase();
   userNameLabel.textContent = user.name;
 
+  // Refresh role & title from server (ensures latest DB values are in-memory)
+  authFetch('/auth/me').then(r => r.ok ? r.json() : null).then(me => {
+    if (!me) return;
+    user.role  = me.role;
+    user.title = me.title;
+  });
+
   buildEmojiPicker();
   buildChannelEmojiPicker();
 
@@ -176,6 +183,15 @@ async function initChat() {
   // Search
   document.getElementById('searchBtn').addEventListener('click', openSearch);
   document.getElementById('closeSearchBtn').addEventListener('click', closeSearch);
+
+  // ⋯ More overflow menu
+  const _moreBtn  = document.getElementById('headerMoreBtn');
+  const _moreMenu = document.getElementById('headerOverflowMenu');
+  if (_moreBtn && _moreMenu) {
+    _moreBtn.addEventListener('click', e => { e.stopPropagation(); _moreMenu.classList.toggle('hidden'); });
+    document.addEventListener('click', () => _moreMenu.classList.add('hidden'));
+    _moreMenu.addEventListener('click', e => e.stopPropagation());
+  }
   const _triggerSearch = () => {
     clearTimeout(searchTimeout);
     const q = document.getElementById('searchInput').value.trim();
@@ -525,7 +541,7 @@ function handleServerMsg(msg) {
         if (bar) {
           document.getElementById('callBarText').textContent = `${msg.started_name} started a call`;
           const joinBtn = document.getElementById('callJoinBtn');
-          if (joinBtn) joinBtn.onclick = () => window.open(`/meeting.html?room=${msg.room_code}&name=${encodeURIComponent(user.name)}`, '_blank');
+          if (joinBtn) joinBtn.onclick = () => window.open(`/meeting.html?room=${msg.room_code}&name=${encodeURIComponent(user.name)}&back=chat.html`, '_blank');
           bar.classList.add('visible');
         }
         playSound('callIn');
@@ -592,10 +608,18 @@ async function openChannel(ch) {
     _updateVoltTargetBtn();
   }
   // Show new buttons for channel context
-  ['membersBtn', 'webhooksHeaderBtn', 'exportBtn', 'startCallBtn', 'fileBrowserBtn'].forEach(id => {
+  ['membersBtn', 'webhooksHeaderBtn', 'exportBtn', 'fileBrowserBtn'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = '';
   });
+  // startCallBtn uses flex for stacked icon+label
+  const callBtn = document.getElementById('startCallBtn');
+  if (callBtn) callBtn.style.display = 'flex';
+  // Show header divider and overflow section divider
+  const hDiv = document.getElementById('headerDivider');
+  if (hDiv) hDiv.style.display = '';
+  const oDiv = document.getElementById('overflowDiv1');
+  if (oDiv) oDiv.style.display = '';
   // Readonly / archived channel UI
   const readonlyBar = document.getElementById('readonlyBar');
   const msgInputEl  = document.getElementById('msgInput');
@@ -675,6 +699,11 @@ async function openDm(uid, name) {
   clearInterval(_pinnedPollTimer);
   _pinnedPollTimer = null;
   if (voltTargetBtn) voltTargetBtn.style.display = 'none';
+  // Hide all channel-context header buttons + dividers when in DM
+  ['inviteBtn','membersBtn','galleryBtn','muteChannelBtn','webhooksHeaderBtn',
+   'exportBtn','startCallBtn','fileBrowserBtn','headerDivider','overflowDiv1'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
   const badge = document.getElementById('pinnedBadge');
   const bar   = document.getElementById('pinnedBar');
   badge.classList.add('hidden');
@@ -740,8 +769,9 @@ function appendMessage(m, initial) {
     const avatarHtml = senderUser.avatar_url
       ? `<div class="msg-sender-avatar"><img src="${API + senderUser.avatar_url}" alt="" /></div>`
       : `<div class="msg-sender-avatar" style="background:var(--purple);">${senderInitial}</div>`;
+    const titleBadge = (!m.bot_name && senderUser.title) ? `<span class="user-title-badge">${esc(senderUser.title)}</span>` : '';
     const nameClickable = !m.bot_name
-      ? `<span class="msg-name" style="cursor:pointer;" onclick="openProfileModal(${m.sender_id})">${esc(m.sender_name)}${botBadge}${ephemeralNote}</span>`
+      ? `<span class="msg-name" style="cursor:pointer;" onclick="openProfileModal(${m.sender_id})">${esc(m.sender_name)}${botBadge}${ephemeralNote}</span>${titleBadge}`
       : `<span class="msg-name">${esc(m.sender_name)}${botBadge}${ephemeralNote}</span>`;
     group.innerHTML = `
       <div class="msg-header" style="display:flex;align-items:center;gap:8px;">
@@ -1243,12 +1273,22 @@ async function openDmModal() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-async function authFetch(path, method = 'GET', body = null) {
+async function authFetch(path, methodOrOpts = 'GET', body = null) {
+  let method = 'GET';
+  let rawBody = null;
+  if (typeof methodOrOpts === 'string') {
+    method = methodOrOpts;
+    rawBody = body ? JSON.stringify(body) : null;
+  } else if (methodOrOpts && typeof methodOrOpts === 'object') {
+    method = methodOrOpts.method || 'GET';
+    // Accept pre-stringified body from opts or fall back to body arg
+    rawBody = (methodOrOpts.body !== undefined ? methodOrOpts.body : (body ? JSON.stringify(body) : null));
+  }
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
   };
-  if (body) opts.body = JSON.stringify(body);
+  if (rawBody) opts.body = rawBody;
   return fetch(API + path, opts);
 }
 
@@ -3340,7 +3380,7 @@ async function startCall() {
   const res = await authFetch(`/channels/${activeId}/call`, { method: 'POST' });
   if (!res.ok) { showToast('Failed to start call', 'error'); return; }
   const { room_code } = await res.json();
-  window.open(`/meeting.html?room=${room_code}&name=${encodeURIComponent(user.name)}`, '_blank');
+  window.open(`/meeting.html?room=${room_code}&name=${encodeURIComponent(user.name)}&back=chat.html`, '_blank');
 }
 async function endCall() {
   if (activeType !== 'channel') return;

@@ -53,7 +53,7 @@
         <i class="fa-solid fa-arrow-right-to-bracket"></i> Join Now
       </button>
 
-      <a href="index.html" class="lobby-back"><i class="fa-solid fa-arrow-left"></i> Back to Home</a>
+      <a href="#" onclick="try{window.close();}catch(e){} setTimeout(()=>{window.location.href=(new URLSearchParams(location.search).get('back')||'index.html');},200); return false;" class="lobby-back"><i class="fa-solid fa-arrow-left"></i> Back</a>
     </div>
   </div>
 

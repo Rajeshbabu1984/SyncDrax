@@ -7,8 +7,9 @@
   const params    = new URLSearchParams(location.search);
   const ROOM_CODE = (params.get('room') || '').toUpperCase();
   const IS_HOST   = params.get('host') === 'true';
+  const BACK_URL  = params.get('back') || 'index.html';
 
-  if (!ROOM_CODE) { location.href = 'index.html'; return; }
+  if (!ROOM_CODE) { location.href = BACK_URL; return; }
 
   /* -------------------- DOM REFS -------------------- */
   const lobby           = document.getElementById('lobby');
@@ -734,7 +735,10 @@
     }, 1000);
   });
   sumLeaveBtn.addEventListener('click', () => {
-    window.location.href = 'index.html';
+    // Close tab if opened by script (from chat hub), otherwise navigate back
+    try { window.close(); } catch(e) {}
+    // Fallback in case window.close() is blocked
+    setTimeout(() => { window.location.href = BACK_URL; }, 300);
   });
 
   // Participants sidebar toggle
