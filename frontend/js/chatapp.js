@@ -734,6 +734,10 @@ async function loadMessages(type, id) {
   const res  = await authFetch(url);
   if (!res.ok) { messagesWrap.innerHTML = ''; return; }
   const msgs = await res.json();
+  // Guard: discard stale responses if the user has already switched context
+  const stillActive = (type === 'channel' && activeType === 'channel' && activeId === id)
+                   || (type === 'dm'      && activeType === 'dm'      && activeId === id);
+  if (!stillActive) return;
   messagesWrap.innerHTML = '';
   if (!msgs.length) {
     messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">No messages yet. Say hello! 👋</div>';
@@ -2399,6 +2403,8 @@ function updatePollCard(card, p) {
 async function loadChannelPolls(channelId) {
   const res = await authFetch(`/chat/channels/${channelId}/polls`);
   if (!res.ok) return;
+  // Guard against stale responses from a previous channel
+  if (activeType !== 'channel' || activeId !== channelId) return;
   const polls = await res.json();
   polls.forEach(p => {
     if (!document.querySelector(`[data-poll-id="${p.id}"]`)) appendPollCard(p);
