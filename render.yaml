@@ -29,7 +29,6 @@ services:
   - type: web
     name: synctact-frontend
     env: static
-    region: oregon
     rootDir: frontend
     staticPublishPath: .
     headers:
