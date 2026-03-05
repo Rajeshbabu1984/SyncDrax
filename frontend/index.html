@@ -216,8 +216,23 @@
       const navLinks   = document.querySelector('.nav-links');
       const adminLink  = document.getElementById('adminFooterLink');
 
-      // Show admin panel link only to admin/mod
+      // Show admin panel link only to admin/mod (use cached role first, then refresh from server)
       if (adminLink) adminLink.style.display = (user && (user.role === 'admin' || user.role === 'mod')) ? '' : 'none';
+
+      // Fetch fresh role from server and update both localStorage and the link
+      if (user) {
+        const token = localStorage.getItem('synctact_token');
+        fetch((typeof API_BASE !== 'undefined' ? API_BASE : 'http://localhost:8000') + '/auth/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        }).then(r => r.ok ? r.json() : null).then(me => {
+          if (!me) return;
+          if (me.role !== user.role) {
+            user.role = me.role;
+            localStorage.setItem('synctact_user', JSON.stringify(user));
+          }
+          if (adminLink) adminLink.style.display = (me.role === 'admin' || me.role === 'mod') ? '' : 'none';
+        }).catch(() => {});
+      }
 
       // Remove existing signed-in pill if any
       const existing = document.getElementById('navUserPill');
