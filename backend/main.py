@@ -1460,6 +1460,17 @@ async def health():
     return {"status": "ok", "rooms": len(rooms)}
 
 
+@app.get("/debug/volt")
+async def debug_volt():
+    key = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
+    return {
+        "key_loaded": bool(key),
+        "key_preview": (key[:6] + "…" + key[-4:]) if len(key) > 10 else ("(empty)" if not key else key),
+        "env_var_Syntact_Key": bool(os.getenv("Syntact_Key")),
+        "env_var_GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
+    }
+
+
 @app.get("/rooms")
 async def room_stats():
     return {
@@ -3079,7 +3090,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                                            "user_name": uname, "level": new_level,
                                            "channel_id": channel_id})
                 # @Volt mention: reply with Gemini AI
-                if GEMINI_API_KEY and content and '@volt' in content.lower():
+                if content and '@volt' in content.lower():
                     prompt_text = content  # the user's message
                     hist_msgs = []
                     with Session(engine) as hs:
@@ -3096,20 +3107,23 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                         f"Reply helpfully and concisely (2-3 sentences max)."
                     )
                     _volt_reply = None
-                    try:
-                        async with httpx.AsyncClient(timeout=15) as hc:
-                            r = await hc.post(
-                                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-                                json={"contents": [{"parts": [{"text": ai_prompt}]}]},
-                            )
-                        if r.status_code == 200:
-                            _volt_reply = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                        else:
-                            log.warning("@Volt Gemini error %d: %s", r.status_code, r.text[:200])
-                            _volt_reply = f"⚡ Volt is having trouble connecting to AI right now (status {r.status_code}). Try again shortly."
-                    except Exception as _ve:
-                        log.warning("@Volt AI error: %s", _ve)
-                        _volt_reply = "⚡ Volt couldn't reach the AI service. Check that the API key is set correctly on the server."
+                    if not GEMINI_API_KEY:
+                        _volt_reply = "⚡ Volt: AI is not configured — the `Syntact_Key` environment variable is missing on the server."
+                    else:
+                        try:
+                            async with httpx.AsyncClient(timeout=15) as hc:
+                                r = await hc.post(
+                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+                                    json={"contents": [{"parts": [{"text": ai_prompt}]}]},
+                                )
+                            if r.status_code == 200:
+                                _volt_reply = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                            else:
+                                log.warning("@Volt Gemini error %d: %s", r.status_code, r.text[:200])
+                                _volt_reply = f"⚡ Volt: Gemini API error {r.status_code} — {r.json().get('error',{}).get('message','unknown error')}"
+                        except Exception as _ve:
+                            log.warning("@Volt AI error: %s", _ve)
+                            _volt_reply = f"⚡ Volt: network error reaching Gemini — {_ve}"
                     if _volt_reply:
                         with Session(engine) as vs:
                             volt_cm = ChatMessage(
