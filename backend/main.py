@@ -257,6 +257,25 @@ class AuditLog(SQLModel, table=True):
     created_at:       datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class UserXP(SQLModel, table=True):
+    id:       Optional[int] = Field(default=None, primary_key=True)
+    user_id:  int           = Field(index=True, unique=True)
+    xp:       int           = Field(default=0)
+    level:    int           = Field(default=1)
+    updated_at: datetime    = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class UserWarning(SQLModel, table=True):
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    user_id:    int           = Field(index=True)
+    user_name:  str
+    reason:     str
+    warned_by:  int
+    warned_by_name: str
+    channel_id: Optional[int] = Field(default=None)
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class UserSession(SQLModel, table=True):
     id:         Optional[int] = Field(default=None, primary_key=True)
     user_id:    int           = Field(index=True)
@@ -403,6 +422,8 @@ def migrate_db():
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(ddl))
+        # UserXP table is created by SQLModel create_all; no manual column migration needed
+        # UserWarning table likewise created by create_all
 
 
 def get_session():
@@ -3041,7 +3062,56 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                         content=content, file_url=file_url, file_name=file_name,
                     )
                     session.add(cm); session.commit(); session.refresh(cm)
+                    # XP reward: 5 XP per message, level up every 100 XP
+                    xp_rec = session.exec(select(UserXP).where(UserXP.user_id == user_id)).first()
+                    if not xp_rec:
+                        xp_rec = UserXP(user_id=user_id, xp=0, level=1)
+                        session.add(xp_rec)
+                    xp_rec.xp += 5
+                    new_level = max(1, xp_rec.xp // 100 + 1)
+                    leveled_up = new_level > xp_rec.level
+                    xp_rec.level = new_level
+                    xp_rec.updated_at = datetime.now(timezone.utc)
+                    session.add(xp_rec); session.commit()
                 await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
+                if leveled_up:
+                    await _chat_broadcast({"type": "level_up", "user_id": user_id,
+                                           "user_name": uname, "level": new_level,
+                                           "channel_id": channel_id})
+                # @Volt mention: reply with Gemini AI
+                if GEMINI_API_KEY and content and '@volt' in content.lower():
+                    prompt_text = content  # the user's message
+                    hist_msgs = []
+                    with Session(engine) as hs:
+                        hist_msgs = hs.exec(
+                            select(ChatMessage)
+                            .where(ChatMessage.channel_id == channel_id, ChatMessage.bot_name == None)
+                            .order_by(ChatMessage.created_at.desc()).limit(10)
+                        ).all()
+                    context_txt = '\n'.join(f"{m.sender_name}: {m.content}" for m in reversed(hist_msgs) if m.content)
+                    ai_prompt = (
+                        f"You are Volt, a helpful smart assistant in a team chat app.\n"
+                        f"Recent chat context:\n{context_txt}\n\n"
+                        f"User ({uname}) says: {prompt_text}\n\n"
+                        f"Reply helpfully and concisely (2-3 sentences max)."
+                    )
+                    try:
+                        async with httpx.AsyncClient(timeout=15) as hc:
+                            r = await hc.post(
+                                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+                                json={"contents": [{"parts": [{"text": ai_prompt}]}]},
+                            )
+                        if r.status_code == 200:
+                            reply_text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                            with Session(engine) as vs:
+                                volt_cm = ChatMessage(
+                                    channel_id=channel_id, sender_id=0, sender_name="Volt",
+                                    content=reply_text, bot_name="Volt",
+                                )
+                                vs.add(volt_cm); vs.commit(); vs.refresh(volt_cm)
+                            await _chat_broadcast({"type": "channel_message", "message": _msg_dict(volt_cm)})
+                    except Exception as _ve:
+                        log.warning("@Volt AI error: %s", _ve)
 
             # -- Direct message --
             elif mtype == "dm":
@@ -3132,6 +3202,110 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
         chat_connections.pop(user_id, None)
         log.info("[chat] user %d disconnected", user_id)
         await _chat_broadcast({"type": "presence", "user_id": user_id, "online": False})
+
+
+# =============================================================
+# ── Purge messages (bulk delete) ──────────────────────────────
+# =============================================================
+@app.delete("/chat/channels/{channel_id}/purge")
+async def purge_messages(
+    channel_id: int,
+    count: int = 10,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if current_user.role not in ('admin', 'moderator'):
+        raise HTTPException(403, "Moderators only")
+    count = max(1, min(count, 100))
+    msgs = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.channel_id == channel_id, ChatMessage.bot_name == None)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(count)
+    ).all()
+    ids = [m.id for m in msgs]
+    for m in msgs:
+        session.delete(m)
+    session.commit()
+    _log_audit(session, "purge", current_user.id, current_user.name,
+               channel_id=channel_id, detail=f"Purged {len(ids)} messages")
+    for mid in ids:
+        await _chat_broadcast({"type": "message_deleted", "message_id": mid})
+    return {"ok": True, "deleted": len(ids)}
+
+
+# =============================================================
+# ── Warnings ──────────────────────────────────────────────────
+# =============================================================
+class WarnRequest(BaseModel):
+    user_id:    int
+    reason:     str
+    channel_id: Optional[int] = None
+
+@app.post("/mod/warn", status_code=201)
+async def warn_user(
+    body: WarnRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if current_user.role not in ('admin', 'moderator'):
+        raise HTTPException(403, "Moderators only")
+    target = session.get(User, body.user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    w = UserWarning(
+        user_id=target.id, user_name=target.name,
+        reason=body.reason, warned_by=current_user.id,
+        warned_by_name=current_user.name, channel_id=body.channel_id,
+    )
+    session.add(w); session.commit(); session.refresh(w)
+    _log_audit(session, "warn_user", current_user.id, current_user.name,
+               target.id, target.name, body.channel_id, body.reason)
+    await _chat_send(target.id, {
+        "type": "system_msg",
+        "message": f"⚠️ You received a warning from {current_user.name}: {body.reason}"
+    })
+    return {"ok": True, "warning_id": w.id}
+
+@app.get("/mod/warnings/{user_id}")
+def get_warnings(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if current_user.role not in ('admin', 'moderator') and current_user.id != user_id:
+        raise HTTPException(403)
+    ws = session.exec(select(UserWarning).where(UserWarning.user_id == user_id).order_by(UserWarning.created_at.desc())).all()
+    return [{"id": w.id, "reason": w.reason, "warned_by": w.warned_by_name,
+             "created_at": w.created_at.isoformat()} for w in ws]
+
+
+# =============================================================
+# ── XP / Leaderboard ──────────────────────────────────────────
+# =============================================================
+@app.get("/users/xp")
+def get_xp_leaderboard(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rows = session.exec(select(UserXP).order_by(UserXP.xp.desc()).limit(20)).all()
+    result = []
+    for r in rows:
+        u = session.get(User, r.user_id)
+        result.append({"user_id": r.user_id, "name": u.name if u else f"User{r.user_id}",
+                       "xp": r.xp, "level": r.level})
+    return result
+
+@app.get("/users/me/xp")
+def get_my_xp(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    xp_rec = session.exec(select(UserXP).where(UserXP.user_id == current_user.id)).first()
+    if not xp_rec:
+        return {"xp": 0, "level": 1, "next_level_xp": 100}
+    next_xp = xp_rec.level * 100
+    return {"xp": xp_rec.xp, "level": xp_rec.level, "next_level_xp": next_xp}
 
 
 # =============================================================

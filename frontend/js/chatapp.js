@@ -572,6 +572,20 @@ function handleServerMsg(msg) {
       handleTaskWsEvent(msg);
       break;
     }
+
+    case 'level_up': {
+      if (msg.channel_id === activeId || activeType === 'channel') {
+        showToast(`🎉 ${msg.user_name} reached Level ${msg.level}!`, 'info', 5000);
+        if (messagesWrap) {
+          const div = document.createElement('div');
+          div.className = 'level-up-notif';
+          div.innerHTML = `🎉 <strong>${esc(msg.user_name)}</strong> leveled up to <span class="level-badge">Lvl ${msg.level}</span>!`;
+          messagesWrap.appendChild(div);
+          messagesWrap.scrollTop = messagesWrap.scrollHeight;
+        }
+      }
+      break;
+    }
   }
 }
 
@@ -922,19 +936,32 @@ async function sendMessage() {
 
 // ── Slash commands ────────────────────────────────────────────────────────────
 const SLASH_COMMANDS = [
-  { cmd: '/meet',    icon: '📹', desc: 'Create a meeting room link' },
-  { cmd: '/poll',    icon: '📊', desc: '/poll Question | Option1 | Option2' },
-  { cmd: '/roll',    icon: '🎲', desc: '/roll [max] — roll a random number' },
-  { cmd: '/coin',    icon: '🪙', desc: 'Flip a coin' },
-  { cmd: '/remind',  icon: '⏰', desc: '/remind 10m Your reminder text' },
-  { cmd: '/task',    icon: '✅', desc: '/task <title> — add a task to the board' },
-  { cmd: '/focus',   icon: '🌙', desc: '/focus [minutes] — enable focus mode' },
-  { cmd: '/giphy',   icon: '🎞️', desc: '/giphy search term — post a GIF' },
-  { cmd: '/weather', icon: '🌤️', desc: '/weather city — current weather' },
-  { cmd: '/8ball',   icon: '🎱', desc: '/8ball question — magic 8-ball answer' },
-  { cmd: '/trivia',  icon: '🧠', desc: '/trivia — get a random trivia question' },
-  { cmd: '/news',    icon: '📰', desc: '/news topic — latest news summary' },
-  { cmd: '/gallery', icon: '🖼️', desc: '/gallery — open image gallery for this channel' },
+  { cmd: '/help',      icon: '❓', desc: 'List all available commands' },
+  { cmd: '/meet',      icon: '📹', desc: 'Create a meeting room link' },
+  { cmd: '/poll',      icon: '📊', desc: '/poll Question | Option1 | Option2' },
+  { cmd: '/roll',      icon: '🎲', desc: '/roll [max] — roll a random number' },
+  { cmd: '/coin',      icon: '🪙', desc: 'Flip a coin' },
+  { cmd: '/remind',    icon: '⏰', desc: '/remind 10m Your reminder text' },
+  { cmd: '/task',      icon: '✅', desc: '/task <title> — add a task to the board' },
+  { cmd: '/focus',     icon: '🌙', desc: '/focus [minutes] — enable focus mode' },
+  { cmd: '/announce',  icon: '📣', desc: '/announce <text> — post an announcement (mod)' },
+  { cmd: '/lock',      icon: '🔒', desc: 'Set channel to read-only (mod/admin)' },
+  { cmd: '/unlock',    icon: '🔓', desc: 'Remove channel read-only (mod/admin)' },
+  { cmd: '/purge',     icon: '🗑️', desc: '/purge [1-100] — delete last N messages (mod)' },
+  { cmd: '/pin',       icon: '📌', desc: '/pin last — pin the most recent message' },
+  { cmd: '/slowmode',  icon: '🐢', desc: '/slowmode <seconds> — set slowmode (0 to disable)' },
+  { cmd: '/warn',      icon: '⚠️', desc: '/warn @user <reason> — issue a warning (mod)' },
+  { cmd: '/mute',      icon: '🔇', desc: '/mute @user [minutes] — mute a user (mod)' },
+  { cmd: '/kick',      icon: '👢', desc: '/kick @user — remove user from channel (mod)' },
+  { cmd: '/ban',       icon: '🔨', desc: '/ban @user — ban user from server (admin)' },
+  { cmd: '/userinfo',  icon: '🪪', desc: '/userinfo [@user] — show user profile & stats' },
+  { cmd: '/serverinfo',icon: '🖥️', desc: 'Show server stats' },
+  { cmd: '/giphy',     icon: '🎞️', desc: '/giphy search term — post a GIF' },
+  { cmd: '/weather',   icon: '🌤️', desc: '/weather city — current weather' },
+  { cmd: '/8ball',     icon: '🎱', desc: '/8ball question — magic 8-ball answer' },
+  { cmd: '/trivia',    icon: '🧠', desc: '/trivia — get a random trivia question' },
+  { cmd: '/news',      icon: '📰', desc: '/news topic — latest news summary' },
+  { cmd: '/gallery',   icon: '🖼️', desc: '/gallery — open image gallery for this channel' },
 ];
 
 let slashActiveIdx = 0;
@@ -1006,6 +1033,191 @@ async function executeSlashCommand(text) {
   if (cmd === '/coin') {
     const result = Math.random() < 0.5 ? '🪙 Heads!' : '🪙 Tails!';
     await _postVolt(result);
+    return;
+  }
+
+  // ── /help ──────────────────────────────────────────────────
+  if (cmd === '/help') {
+    const lines = SLASH_COMMANDS.map(c => `${c.icon} **${c.cmd}** — ${c.desc}`).join('\n');
+    await _postVolt(`📖 **Volt Commands**\n\n${lines}`);
+    return;
+  }
+
+  // ── /announce ──────────────────────────────────────────────
+  if (cmd === '/announce') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const text = parts.slice(1).join(' ').trim();
+    if (!text) { showToast('Usage: /announce <text>'); return; }
+    await authFetch('/chat/syncbot', {
+      method: 'POST',
+      body: JSON.stringify({
+        content: `📣 **ANNOUNCEMENT** 📣\n\n${text}`,
+        bot_name: 'Volt', channel_id: activeId, volt_target: 'channel'
+      })
+    });
+    return;
+  }
+
+  // ── /lock ──────────────────────────────────────────────────
+  if (cmd === '/lock') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const res = await authFetch(`/channels/${activeId}/settings`, {
+      method: 'PATCH', body: JSON.stringify({ readonly: true })
+    });
+    if (res.ok) showToast('🔒 Channel locked (read-only)');
+    else showToast('Failed to lock channel', 'error');
+    return;
+  }
+
+  // ── /unlock ────────────────────────────────────────────────
+  if (cmd === '/unlock') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const res = await authFetch(`/channels/${activeId}/settings`, {
+      method: 'PATCH', body: JSON.stringify({ readonly: false })
+    });
+    if (res.ok) showToast('🔓 Channel unlocked');
+    else showToast('Failed to unlock channel', 'error');
+    return;
+  }
+
+  // ── /purge ─────────────────────────────────────────────────
+  if (cmd === '/purge') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const n = parseInt(parts[1]) || 10;
+    if (!confirm(`Delete the last ${n} messages in this channel?`)) return;
+    const res = await authFetch(`/chat/channels/${activeId}/purge?count=${n}`, { method: 'DELETE' });
+    if (res.ok) { const d = await res.json(); showToast(`🗑️ Purged ${d.deleted} messages`); }
+    else showToast('Purge failed', 'error');
+    return;
+  }
+
+  // ── /pin last ─────────────────────────────────────────────
+  if (cmd === '/pin') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    const sub = parts[1]?.toLowerCase();
+    if (sub !== 'last') { showToast('Usage: /pin last'); return; }
+    const bubbles = document.querySelectorAll('[data-msg-id]');
+    if (!bubbles.length) { showToast('No messages to pin'); return; }
+    const lastId = bubbles[bubbles.length - 1].dataset.msgId;
+    const res = await authFetch(`/chat/messages/${lastId}/pin`, { method: 'POST' });
+    if (res.ok) showToast('📌 Message pinned');
+    else showToast('Pin failed', 'error');
+    return;
+  }
+
+  // ── /slowmode ─────────────────────────────────────────────
+  if (cmd === '/slowmode') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const secs = parseInt(parts[1]) || 0;
+    const res = await authFetch(`/chat/channels/${activeId}/slowmode`, {
+      method: 'PATCH', body: JSON.stringify({ seconds: secs })
+    });
+    if (res.ok) showToast(secs > 0 ? `🐢 Slowmode set to ${secs}s` : '⚡ Slowmode disabled');
+    else showToast('Failed', 'error');
+    return;
+  }
+
+  // ── /warn ─────────────────────────────────────────────────
+  if (cmd === '/warn') {
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const mention = parts[1]; // e.g. @username
+    const reason  = parts.slice(2).join(' ').trim();
+    if (!mention || !reason) { showToast('Usage: /warn @user <reason>'); return; }
+    const targetName = mention.replace(/^@/, '').toLowerCase();
+    const target = allUsers.find(u => u.name.toLowerCase() === targetName);
+    if (!target) { showToast(`User "${targetName}" not found`); return; }
+    const res = await authFetch('/mod/warn', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: target.id, reason, channel_id: activeType === 'channel' ? activeId : null })
+    });
+    if (res.ok) showToast(`⚠️ Warning issued to ${target.name}`);
+    else showToast('Failed to warn user', 'error');
+    return;
+  }
+
+  // ── /mute ─────────────────────────────────────────────────
+  if (cmd === '/mute') {
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const mention  = parts[1];
+    const mins     = parseInt(parts[2]) || null;
+    const targetName = mention?.replace(/^@/, '').toLowerCase();
+    const target = allUsers.find(u => u.name.toLowerCase() === targetName);
+    if (!target) { showToast('Usage: /mute @user [minutes]'); return; }
+    const body = { user_id: target.id };
+    if (activeType === 'channel') body.channel_id = activeId;
+    if (mins) body.minutes = mins;
+    const res = await authFetch('/mod/mute', { method: 'POST', body: JSON.stringify(body) });
+    if (res.ok) showToast(`🔇 ${target.name} muted${mins ? ` for ${mins}m` : ''}`);
+    else showToast('Mute failed', 'error');
+    return;
+  }
+
+  // ── /kick ─────────────────────────────────────────────────
+  if (cmd === '/kick') {
+    if (activeType !== 'channel') { showToast('Open a channel first'); return; }
+    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    const mention    = parts[1];
+    const targetName = mention?.replace(/^@/, '').toLowerCase();
+    const target = allUsers.find(u => u.name.toLowerCase() === targetName);
+    if (!target) { showToast('Usage: /kick @user'); return; }
+    const res = await authFetch(`/mod/kick/${target.id}/${activeId}`, { method: 'POST' });
+    if (res.ok) showToast(`👢 ${target.name} kicked from channel`);
+    else showToast('Kick failed', 'error');
+    return;
+  }
+
+  // ── /ban ──────────────────────────────────────────────────
+  if (cmd === '/ban') {
+    if (user.role !== 'admin') { showToast('⛔ Admins only'); return; }
+    const mention    = parts[1];
+    const targetName = mention?.replace(/^@/, '').toLowerCase();
+    const target = allUsers.find(u => u.name.toLowerCase() === targetName);
+    if (!target) { showToast('Usage: /ban @user'); return; }
+    if (!confirm(`Permanently ban ${target.name}?`)) return;
+    const res = await authFetch(`/mod/ban/${target.id}`, { method: 'POST' });
+    if (res.ok) showToast(`🔨 ${target.name} banned`);
+    else showToast('Ban failed', 'error');
+    return;
+  }
+
+  // ── /userinfo ─────────────────────────────────────────────
+  if (cmd === '/userinfo') {
+    const mention    = parts[1];
+    const targetName = mention?.replace(/^@/, '').toLowerCase();
+    const target = targetName
+      ? allUsers.find(u => u.name.toLowerCase() === targetName)
+      : allUsers.find(u => u.id === user.id);
+    if (!target) { showToast('User not found'); return; }
+    const xpRes = await authFetch(`/users/me/xp`);
+    const warnRes = await authFetch(`/mod/warnings/${target.id}`);
+    const xpData   = xpRes.ok   ? await xpRes.json()  : { xp: 0, level: 1 };
+    const warnings = warnRes.ok ? await warnRes.json() : [];
+    await _postVolt(
+      `🪪 **${target.name}**\n` +
+      `${target.title ? '> ' + target.title + '\n' : ''}` +
+      `🏅 Level ${xpData.level} · ${xpData.xp} XP\n` +
+      `⚠️ Warnings: ${warnings.length}\n` +
+      `📅 Joined: ${target.id ? 'User #' + target.id : 'unknown'}`
+    );
+    return;
+  }
+
+  // ── /serverinfo ───────────────────────────────────────────
+  if (cmd === '/serverinfo') {
+    const lbRes = await authFetch('/users/xp');
+    const lb    = lbRes.ok ? await lbRes.json() : [];
+    const topUser = lb[0];
+    await _postVolt(
+      `🖥️ **SyncTact Server**\n` +
+      `📢 Channels: ${channels.length}\n` +
+      `👥 Members online: ${Object.values(dmUsers).filter(u => u.online).length}\n` +
+      `🏆 Top chatter: ${topUser ? topUser.name + ' (Lvl ' + topUser.level + ')' : 'none yet'}`
+    );
     return;
   }
 
