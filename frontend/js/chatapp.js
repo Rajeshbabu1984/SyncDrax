@@ -666,7 +666,8 @@ async function openChannel(ch) {
   restoreDraft();
   // Mood board mode
   applyMoodBoardMode(ch.channel_type === 'moodboard');
-  await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id), loadChannelPolls(ch.id)]);
+  await Promise.all([loadMessages('channel', ch.id), loadPinnedMessages(ch.id)]);
+  await loadChannelPolls(ch.id);
   _updateSlowmodeBar(ch.slowmode_seconds || 0);
   // 1-second auto-refresh for pinned badge (instant fallback if WS misses an event)
   clearInterval(_pinnedPollTimer);

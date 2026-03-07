@@ -3095,6 +3095,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                         f"User ({uname}) says: {prompt_text}\n\n"
                         f"Reply helpfully and concisely (2-3 sentences max)."
                     )
+                    _volt_reply = None
                     try:
                         async with httpx.AsyncClient(timeout=15) as hc:
                             r = await hc.post(
@@ -3102,16 +3103,21 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                                 json={"contents": [{"parts": [{"text": ai_prompt}]}]},
                             )
                         if r.status_code == 200:
-                            reply_text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                            with Session(engine) as vs:
-                                volt_cm = ChatMessage(
-                                    channel_id=channel_id, sender_id=0, sender_name="Volt",
-                                    content=reply_text, bot_name="Volt",
-                                )
-                                vs.add(volt_cm); vs.commit(); vs.refresh(volt_cm)
-                            await _chat_broadcast({"type": "channel_message", "message": _msg_dict(volt_cm)})
+                            _volt_reply = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        else:
+                            log.warning("@Volt Gemini error %d: %s", r.status_code, r.text[:200])
+                            _volt_reply = f"⚡ Volt is having trouble connecting to AI right now (status {r.status_code}). Try again shortly."
                     except Exception as _ve:
                         log.warning("@Volt AI error: %s", _ve)
+                        _volt_reply = "⚡ Volt couldn't reach the AI service. Check that the API key is set correctly on the server."
+                    if _volt_reply:
+                        with Session(engine) as vs:
+                            volt_cm = ChatMessage(
+                                channel_id=channel_id, sender_id=0, sender_name="Volt",
+                                content=_volt_reply, bot_name="Volt",
+                            )
+                            vs.add(volt_cm); vs.commit(); vs.refresh(volt_cm)
+                        await _chat_broadcast({"type": "channel_message", "message": _msg_dict(volt_cm)})
 
             # -- Direct message --
             elif mtype == "dm":
