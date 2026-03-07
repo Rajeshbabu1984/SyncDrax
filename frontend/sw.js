@@ -30,7 +30,7 @@ self.addEventListener('fetch', e => {
   e.respondWith(
     fetch(e.request)
       .then(r => {
-        if (r && r.status === 200) {
+        if (r && r.status === 200 && e.request.method === 'GET') {
           const clone = r.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
