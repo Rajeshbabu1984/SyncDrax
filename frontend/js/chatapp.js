@@ -282,6 +282,7 @@ function connectWS() {
   ws.onclose = () => { console.log('[chat-ws] disconnected'); setTimeout(connectWS, 3000); };
   ws.onerror = e => console.error('[chat-ws] error', e);
   ws.onmessage = e => {
+    console.log('[chat-ws] received:', e.data);
     try { handleServerMsg(JSON.parse(e.data)); } catch(err) { console.warn(err); }
   };
 }
@@ -292,10 +293,12 @@ function wsSend(obj) {
 
 // ── Handle server messages ────────────────────────────────────────────────────
 function handleServerMsg(msg) {
+  console.log('[chat-ws] handleServerMsg:', msg.type, 'activeType:', activeType, 'activeId:', activeId);
   switch (msg.type) {
 
     case 'channel_message': {
       const m = msg.message;
+      console.log('[chat-ws] channel_message - m.channel_id:', m.channel_id, 'activeId:', activeId, 'match:', activeId === m.channel_id);
       if (activeType === 'channel' && activeId === m.channel_id) {
         const wrap = document.getElementById('messagesWrap');
         const wasAtBottom = !wrap || wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
