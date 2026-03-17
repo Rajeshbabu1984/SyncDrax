@@ -488,7 +488,6 @@
     .slide-panel:not(.hidden) { transform:translateX(0); }
     /* Settings tabs */
     .settings-tab.active { background:var(--bg-active) !important; color:var(--text) !important; }
-    .settings-pane { }
     .gallery-panel-body { flex:1; overflow-y:auto; padding:12px;                          display:grid; grid-template-columns:repeat(3,1fr); gap:6px; align-content:start; }
     .gallery-item { position:relative; aspect-ratio:1; border-radius:8px; overflow:hidden;
                     background:var(--bg-input); cursor:pointer; }
@@ -515,7 +514,7 @@
     .link-preview .lp-title { font-size:.82rem; font-weight:700; white-space:nowrap;
                                overflow:hidden; text-overflow:ellipsis; }
     .link-preview .lp-desc  { font-size:.75rem; color:var(--text-muted); overflow:hidden;
-                               display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+                               display:-webkit-box; -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical; }
 
     /* Profile modal */
     .profile-card { background:var(--bg-sidebar); border:1px solid var(--border);
