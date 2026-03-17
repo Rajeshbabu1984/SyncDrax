@@ -61,7 +61,7 @@ SECRET_KEY        = os.getenv("SECRET_KEY", "syncdrax-dev-secret-change-in-produ
 ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
 ADMIN_KEY         = os.getenv("ADMIN_KEY", "synctact-admin-2026")
-GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY    = os.getenv("Synctact_Key") or os.getenv("GEMINI_API_KEY", "")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synctact.db")
 UPLOADS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
@@ -1462,11 +1462,11 @@ async def health():
 
 @app.get("/debug/volt")
 async def debug_volt():
-    key = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
+    key = os.getenv("Synctact_Key") or os.getenv("GEMINI_API_KEY", "")
     return {
         "key_loaded": bool(key),
         "key_preview": (key[:6] + "…" + key[-4:]) if len(key) > 10 else ("(empty)" if not key else key),
-        "env_var_Syntact_Key": bool(os.getenv("Syntact_Key")),
+        "env_var_Synctact_Key": bool(os.getenv("Synctact_Key")),
         "env_var_GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
     }
 
