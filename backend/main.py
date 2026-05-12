@@ -24,10 +24,13 @@ import logging
 import os
 import re
 import secrets
+import smtplib
 import shutil
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Dict, List, Optional
 
 import httpx
@@ -63,9 +66,19 @@ TOKEN_EXPIRE_DAYS = 30
 ADMIN_KEY         = os.getenv("ADMIN_KEY", "synctact-admin-2026")
 GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
 
+# Email config for verification
+SMTP_HOST     = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER     = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+FROM_EMAIL    = os.getenv("FROM_EMAIL", SMTP_USER)
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synctact.db")
 UPLOADS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# In-memory verification codes storage: {email: {"code": "123456", "expires": timestamp, "name": "...", "password": "..."}}
+verification_codes: Dict[str, dict] = {}
 
 # -------------------------------------------------------------
 # Logging
@@ -442,6 +455,48 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
+def send_verification_email(to_email: str, code: str) -> bool:
+    """Send a 6-digit verification code via email. Returns True on success, False on failure."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        log.warning("SMTP not configured — skipping email send to %s", to_email)
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Your SyncTact Verification Code"
+        msg["From"] = FROM_EMAIL
+        msg["To"] = to_email
+
+        text_body = f"Your verification code is: {code}\n\nThis code will expire in 10 minutes."
+        html_body = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; padding: 20px;">
+            <div style="max-width: 500px; margin: 0 auto; background: #f9fafb; padding: 30px; border-radius: 8px;">
+              <h2 style="color: #1f2937; margin-bottom: 20px;">Welcome to SyncTact!</h2>
+              <p style="color: #4b5563; font-size: 16px;">Your verification code is:</p>
+              <div style="background: #fff; padding: 20px; border-radius: 6px; text-align: center; margin: 20px 0;">
+                <span style="font-size: 32px; font-weight: bold; color: #5865f2; letter-spacing: 8px;">{code}</span>
+              </div>
+              <p style="color: #6b7280; font-size: 14px;">This code will expire in 10 minutes.</p>
+              <p style="color: #9ca3af; font-size: 12px; margin-top: 30px;">If you didn't request this code, please ignore this email.</p>
+            </div>
+          </body>
+        </html>
+        """
+        msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(FROM_EMAIL, to_email, msg.as_string())
+
+        log.info("Verification email sent to %s", to_email)
+        return True
+    except Exception as e:
+        log.error("Failed to send verification email to %s: %s", to_email, e)
+        return False
+
+
 # -------------------------------------------------------------
 # JWT
 # -------------------------------------------------------------
@@ -486,6 +541,17 @@ class SignUpRequest(BaseModel):
 class SignInRequest(BaseModel):
     email:    str
     password: str
+
+
+class RequestVerificationRequest(BaseModel):
+    name:     str
+    email:    str
+    password: str
+
+
+class VerifyAndSignUpRequest(BaseModel):
+    email: str
+    code:  str
 
 
 class AuthResponse(BaseModel):
@@ -676,6 +742,95 @@ async def start_scheduler():
 # -------------------------------------------------------------
 # Auth endpoints
 # -------------------------------------------------------------
+@app.post("/auth/request-verification")
+@limiter.limit("3/minute")
+def request_verification(req: RequestVerificationRequest, request: Request, session: Session = Depends(get_session)):
+    """Step 1: Send verification code to email before signup"""
+    req.name  = req.name.strip()
+    req.email = req.email.strip().lower()
+
+    if not req.name or not req.email or not req.password:
+        raise HTTPException(status_code=400, detail="All fields are required")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    # Check if email already exists
+    existing = session.exec(select(User).where(User.email == req.email)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An account with that email already exists")
+
+    # Generate 6-digit code
+    code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+    
+    # Store verification data (expires in 10 minutes)
+    verification_codes[req.email] = {
+        "code": code,
+        "name": req.name,
+        "password": req.password,
+        "expires": time.time() + 600  # 10 minutes
+    }
+
+    # Send email
+    if not send_verification_email(req.email, code):
+        # If email sending is not configured, return code in response for testing
+        log.warning("Email not configured — returning code in response for testing")
+        return {"message": "Verification code sent (testing mode)", "code": code}
+
+    log.info("Verification code sent to %s", req.email)
+    return {"message": "Verification code sent to your email"}
+
+
+@app.post("/auth/verify-and-signup", response_model=AuthResponse)
+@limiter.limit("5/minute")
+def verify_and_signup(req: VerifyAndSignUpRequest, request: Request, session: Session = Depends(get_session)):
+    """Step 2: Verify code and create account"""
+    req.email = req.email.strip().lower()
+    req.code  = req.code.strip()
+
+    # Check if verification code exists
+    if req.email not in verification_codes:
+        raise HTTPException(status_code=400, detail="No verification request found for this email")
+
+    stored = verification_codes[req.email]
+
+    # Check if expired
+    if time.time() > stored["expires"]:
+        del verification_codes[req.email]
+        raise HTTPException(status_code=400, detail="Verification code expired. Please request a new one")
+
+    # Check if code matches
+    if req.code != stored["code"]:
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+
+    # Code is valid — create user
+    name = stored["name"]
+    password = stored["password"]
+
+    # Double-check email doesn't exist (race condition safety)
+    existing = session.exec(select(User).where(User.email == req.email)).first()
+    if existing:
+        del verification_codes[req.email]
+        raise HTTPException(status_code=409, detail="An account with that email already exists")
+
+    user = User(name=name, email=req.email, hashed_password=hash_password(password))
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
+    token = create_token(user.id, user.email)
+    tok_hash = hashlib.sha256(token.encode()).hexdigest()
+    ua = request.headers.get("user-agent", "")[:200]
+    ip = get_remote_address(request)
+    session.add(UserSession(user_id=user.id, token_hash=tok_hash, device=ua, ip_addr=ip))
+    session.commit()
+
+    # Clean up verification code
+    del verification_codes[req.email]
+
+    log.info("New user signed up (verified): %s (%s)", user.name, user.email)
+    return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
+
+
 @app.post("/auth/signup", response_model=AuthResponse)
 @limiter.limit("5/minute")
 def signup(req: SignUpRequest, request: Request, session: Session = Depends(get_session)):

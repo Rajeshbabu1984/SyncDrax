@@ -168,11 +168,27 @@
       </div>
 
       <div class="modal-body hidden" id="signupForm">
-        <h2>Create your account</h2>
-        <input type="text" id="signupName" placeholder="Display name" class="modal-input" />
-        <input type="email" id="signupEmail" placeholder="Email" class="modal-input" />
-        <input type="password" id="signupPassword" placeholder="Password" class="modal-input" />
-        <button class="btn btn-primary full-width" id="doSignUpBtn">Create Account</button>
+        <h2 id="signupTitle">Create your account</h2>
+        
+        <!-- Step 1: Enter details -->
+        <div id="signupStep1">
+          <input type="text" id="signupName" placeholder="Display name" class="modal-input" />
+          <input type="email" id="signupEmail" placeholder="Email" class="modal-input" />
+          <input type="password" id="signupPassword" placeholder="Password" class="modal-input" />
+          <button class="btn btn-primary full-width" id="doSignUpBtn">Send Verification Code</button>
+        </div>
+
+        <!-- Step 2: Enter verification code -->
+        <div id="signupStep2" style="display:none">
+          <p style="color:#828689;font-size:0.9rem;margin-bottom:16px">
+            We've sent a 6-digit code to <strong id="verifyEmail"></strong>. Enter it below to complete signup.
+          </p>
+          <input type="text" id="verifyCode" placeholder="Enter 6-digit code" class="modal-input" maxlength="6" 
+                 style="text-align:center;font-size:1.5rem;letter-spacing:0.5rem;font-weight:bold" />
+          <button class="btn btn-primary full-width" id="verifySignUpBtn">Verify & Create Account</button>
+          <button class="btn full-width" id="backToStep1Btn" 
+                  style="margin-top:8px;background:#2c2f33;color:#ddd">Back</button>
+        </div>
       </div>
     </div>
   </div>
@@ -327,7 +343,7 @@
       }
     });
 
-    /* -- Sign Up -- */
+    /* -- Sign Up Step 1: Request Verification Code -- */
     document.getElementById('doSignUpBtn').addEventListener('click', async () => {
       const name  = document.getElementById('signupName').value.trim();
       const email = document.getElementById('signupEmail').value.trim();
@@ -336,21 +352,69 @@
       if (pass.length < 6) return alert('Password must be at least 6 characters.');
 
       const btn = document.getElementById('doSignUpBtn');
-      btn.disabled = true; btn.textContent = 'Creating account�';
+      btn.disabled = true; btn.textContent = 'Sending code…';
       try {
-        const res  = await fetch(`${API}/auth/signup`, {
+        const res  = await fetch(`${API}/auth/request-verification`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ name, email, password: pass })
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Sign up failed');
+        if (!res.ok) throw new Error(data.detail || 'Failed to send verification code');
+        
+        // Show step 2
+        document.getElementById('signupStep1').style.display = 'none';
+        document.getElementById('signupStep2').style.display = 'block';
+        document.getElementById('verifyEmail').textContent = email;
+        document.getElementById('signupTitle').textContent = 'Verify your email';
+        document.getElementById('verifyCode').focus();
+
+        // If testing mode (code returned in response)
+        if (data.code) {
+          console.log('Testing mode — verification code:', data.code);
+          alert(`Testing mode: Your verification code is ${data.code}`);
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Send Verification Code';
+      }
+    });
+
+    /* -- Sign Up Step 2: Verify Code and Create Account -- */
+    document.getElementById('verifySignUpBtn').addEventListener('click', async () => {
+      const email = document.getElementById('signupEmail').value.trim();
+      const code  = document.getElementById('verifyCode').value.trim();
+      if (!code || code.length !== 6) return alert('Please enter the 6-digit code.');
+
+      const btn = document.getElementById('verifySignUpBtn');
+      btn.disabled = true; btn.textContent = 'Verifying…';
+      try {
+        const res  = await fetch(`${API}/auth/verify-and-signup`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ email, code })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Verification failed');
         saveUser(data.user, data.token);
         window.location.href = 'chat.html';
       } catch (err) {
         alert(err.message);
       } finally {
-        btn.disabled = false; btn.textContent = 'Create Account';
+        btn.disabled = false; btn.textContent = 'Verify & Create Account';
       }
+    });
+
+    /* -- Back to Step 1 -- */
+    document.getElementById('backToStep1Btn').addEventListener('click', () => {
+      document.getElementById('signupStep1').style.display = 'block';
+      document.getElementById('signupStep2').style.display = 'none';
+      document.getElementById('signupTitle').textContent = 'Create your account';
+      document.getElementById('verifyCode').value = '';
+    });
+
+    /* -- Enter key support for verification code -- */
+    document.getElementById('verifyCode').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('verifySignUpBtn').click();
     });
 
     /* -- Guest -- */
