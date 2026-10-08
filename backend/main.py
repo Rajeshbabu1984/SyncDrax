@@ -65,6 +65,8 @@ ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
 ADMIN_KEY         = os.getenv("ADMIN_KEY", "synctact-admin-2026")
 GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_URL        = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 # Email config for verification
 SMTP_HOST     = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -1003,7 +1005,7 @@ def channel_members(channel_id: int, current_user: User = Depends(get_current_us
     users = session.exec(select(User).where(User.id.in_(uids))).all() if uids else []
     roles_rows = session.exec(select(ChannelRole).where(ChannelRole.channel_id == channel_id)).all()
     role_map = {r.user_id: r.role for r in roles_rows}
-    return [{"id": u.id, "name": u.name, "avatar": u.avatar,
+    return [{"id": u.id, "name": u.name, "avatar": u.avatar_url,
              "role": role_map.get(u.id, getattr(u, "role", "member")),
              "presence": getattr(u, "presence", "online")} for u in users]
 
@@ -1070,24 +1072,6 @@ async def receive_webhook(token: str, body: dict, session: Session = Depends(get
 
 
 # -------------------------------------------------------------
-# Full-text search
-# -------------------------------------------------------------
-@app.get("/chat/search")
-def search_messages(q: str = "", limit: int = 50, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    if not q.strip():
-        return []
-    rows = session.exec(
-        select(ChatMessage)
-        .where(ChatMessage.content.contains(q))
-        .order_by(ChatMessage.created_at.desc())
-        .limit(limit)
-    ).all()
-    return [{"id": m.id, "content": m.content, "channel_id": m.channel_id,
-             "sender_id": m.sender_id, "sender_name": m.sender_name,
-             "created_at": str(m.created_at)} for m in rows]
-
-
-# -------------------------------------------------------------
 # Export chat history
 # -------------------------------------------------------------
 @app.get("/chat/channels/{channel_id}/export")
@@ -1126,7 +1110,7 @@ def get_audit_log(limit: int = 50, channel_id: Optional[int] = None,
         q = select(AuditLog).where(AuditLog.channel_id == channel_id).order_by(AuditLog.created_at.desc()).limit(limit)
     rows = session.exec(q).all()
     return [{"id": r.id, "action": r.action, "actor_id": r.actor_id,
-             "target_id": r.target_id, "channel_id": r.channel_id,
+             "target_id": r.target_user_id, "channel_id": r.channel_id,
              "detail": r.detail, "created_at": str(r.created_at)} for r in rows]
 
 
@@ -1537,7 +1521,7 @@ async def trigger_email_digest(current_user: User = Depends(get_current_user), s
         msg["To"]      = current_user.email
         with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT", 587))) as s:
             s.starttls()
-            s.login(os.getenv("SMTP_USER", ""), os.getenv("SMTP_PASS", ""))
+            s.login(SMTP_USER, SMTP_PASSWORD)
             s.send_message(msg)
         return {"ok": True, "sent_to": current_user.email}
     except Exception as exc:
@@ -2009,6 +1993,11 @@ def search_messages(
     stmt = select(ChatMessage).where(
         ChatMessage.content.contains(q),
         ChatMessage.parent_id == None,  # noqa: E711  top-level only
+        or_(
+            ChatMessage.channel_id != None,  # noqa: E711
+            ChatMessage.sender_id == current_user.id,
+            ChatMessage.dm_to_user_id == current_user.id,
+        ),
     )
     if from_user:
         stmt = stmt.where(ChatMessage.sender_name.ilike(f"%{from_user}%"))
@@ -2748,7 +2737,7 @@ async def link_preview(url: str, current_user: User = Depends(get_current_user))
                 url,
                 headers={"User-Agent": "SyncTact/1.0 (link preview bot)"},
             )
-        soup = BeautifulSoup(r.text, "lxml")
+        soup = BeautifulSoup(r.text, "html.parser")
 
         def meta(prop: str) -> str:
             tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
@@ -3130,8 +3119,6 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
         return
 
     await ws.accept()
-    chat_connections[user_id] = ws
-    log.info("[chat] user %d connected  (total online: %d)", user_id, len(chat_connections))
 
     with Session(engine) as session:
         db_user = session.get(User, user_id)
@@ -3141,6 +3128,9 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
             await ws.send_text(json.dumps({"type": "moderation", "action": "banned", "by": "system"}))
             await ws.close(code=4003)
             return
+
+    chat_connections[user_id] = ws
+    log.info("[chat] user %d connected  (total online: %d)", user_id, len(chat_connections))
 
     await _chat_broadcast({"type": "presence", "user_id": user_id, "online": True}, exclude_uid=user_id)
 
@@ -3228,6 +3218,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                         content=content, file_url=file_url, file_name=file_name,
                     )
                     session.add(cm); session.commit(); session.refresh(cm)
+                    cm_dict = _msg_dict(cm)
                     # XP reward: 5 XP per message, level up every 100 XP
                     xp_rec = session.exec(select(UserXP).where(UserXP.user_id == user_id)).first()
                     if not xp_rec:
@@ -3239,7 +3230,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     xp_rec.level = new_level
                     xp_rec.updated_at = datetime.now(timezone.utc)
                     session.add(xp_rec); session.commit()
-                await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
+                await _chat_broadcast({"type": "channel_message", "message": cm_dict})
                 if leveled_up:
                     await _chat_broadcast({"type": "level_up", "user_id": user_id,
                                            "user_name": uname, "level": new_level,
@@ -3374,9 +3365,11 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
         if not isinstance(exc, WebSocketDisconnect):
             log.warning("[chat] user %d error: %s", user_id, exc)
     finally:
-        chat_connections.pop(user_id, None)
-        log.info("[chat] user %d disconnected", user_id)
-        await _chat_broadcast({"type": "presence", "user_id": user_id, "online": False})
+        # A newer tab may have replaced this socket; only that tab's disconnect should remove it.
+        if chat_connections.get(user_id) is ws:
+            chat_connections.pop(user_id, None)
+            log.info("[chat] user %d disconnected", user_id)
+            await _chat_broadcast({"type": "presence", "user_id": user_id, "online": False})
 
 
 # =============================================================
