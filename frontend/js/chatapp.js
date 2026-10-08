@@ -108,14 +108,15 @@ async function initChat() {
   buildEmojiPicker();
   buildChannelEmojiPicker();
 
-  await loadChannels();
-  await loadUsers();
-  loadCategories();
-  loadMyProfile();
+  // A slow or failing backend must not stop the rest of the UI from wiring up
+  try { await loadChannels(); } catch (e) { console.warn('[init] channels', e); showToast('Could not load channels — retrying when reconnected', 'error'); }
+  try { await loadUsers(); }    catch (e) { console.warn('[init] users', e); }
+  try { loadCategories(); } catch (e) { console.warn('[init] categories', e); }
+  try { loadMyProfile(); }  catch (e) { console.warn('[init] profile', e); }
   connectWS();
 
-  // Auto-open first channel
-  if (channels.length) openChannel(channels[0]);
+  const joinedViaInvite = await redeemPendingInvite();
+  if (!joinedViaInvite && channels.length) openChannel(channels[0]);
 
   // Event listeners
   sendBtn.addEventListener('click', sendMessage);
@@ -284,6 +285,10 @@ function connectWS() {
     // Re-fetch the open conversation after a reconnect so messages missed while offline appear
     if (_wsRetryDelay > 1000 && activeType && activeId) loadMessages(activeType, activeId);
     _wsRetryDelay = 1000;
+    if (!channels.length) {
+      loadChannels().then(() => { if (!activeId && channels.length) openChannel(channels[0]); }).catch(() => {});
+      if (!allUsers.length) loadUsers().catch(() => {});
+    }
   };
   ws.onclose = e => {
     console.log('[chat-ws] disconnected', e.code);
@@ -1969,9 +1974,30 @@ async function generateInvite() {
   const res = await authFetch('/invite', 'POST', body);
   if (!res.ok) { showToast('Failed to generate invite', 'error'); return; }
   const data = await res.json();
-  const inviteUrl = `${window.location.origin}/chat.html?invite=${data.code}`;
+  const inviteUrl = new URL(`chat.html?invite=${encodeURIComponent(data.code)}`, location.href).href;
   document.getElementById('inviteLinkInput').value = inviteUrl;
   document.getElementById('inviteCopyWrap').classList.remove('hidden');
+}
+
+async function redeemPendingInvite() {
+  const code = sessionStorage.getItem('synctact_pending_invite');
+  if (!code) return false;
+  sessionStorage.removeItem('synctact_pending_invite');
+  try {
+    const res = await authFetch(`/invite/${encodeURIComponent(code)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.detail || 'Invite link is invalid', 'error'); return false; }
+    if (!data.channel_id) { showToast('Invite accepted 🎉'); return false; }
+    let ch = channels.find(c => c.id === data.channel_id);
+    if (!ch) { await loadChannels(); ch = channels.find(c => c.id === data.channel_id); }
+    if (!ch) { showToast('That channel no longer exists', 'error'); return false; }
+    openChannel(ch);
+    showToast(`Joined #${ch.name} via invite 🎉`);
+    return true;
+  } catch (e) {
+    console.warn('[invite]', e);
+    return false;
+  }
 }
 
 // ── Forward message ───────────────────────────────────────────────────────────
@@ -4081,6 +4107,16 @@ function initNewFeatureHandlers2() {
   document.addEventListener('synctact_new_msg', () => playSound('message'));
   document.addEventListener('synctact_mention', () => playSound('mention'));
 }
+
+(function captureInviteParam() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get('invite');
+  if (!code) return;
+  if (/^[\w-]{4,64}$/.test(code)) sessionStorage.setItem('synctact_pending_invite', code);
+  params.delete('invite');
+  const qs = params.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+})();
 
 if (!user || !token) {
   document.getElementById('authGate').classList.remove('hidden');
