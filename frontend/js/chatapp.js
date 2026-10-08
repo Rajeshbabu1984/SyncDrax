@@ -1629,9 +1629,10 @@ function renderMentions(escapedText) {
   const myName = esc((user && user.name) || '');
   const me = myName.toLowerCase();
   return escapedText.replace(/(^|[^\w&;])@([\w.\-]{1,32}(?: [\w.\-]{1,32})?)/g, (match, pre, name) => {
-    // Names may contain one space ("Jane Doe"); only consume the second word if it completes my name
+    // Names may contain one space ("Jane Doe"); only consume the second word if it completes a known name
     let mention = name.split(' ')[0];
-    if (me && name.toLowerCase() === me) mention = name;
+    const full = name.toLowerCase();
+    if (name.includes(' ') && (full === me || allUsers.some(u => esc(u.name || '').toLowerCase() === full))) mention = name;
     const isMe = me && mention.toLowerCase() === me;
     return `${pre}<span class="mention${isMe ? ' mention-me' : ''}">@${mention}</span>${name.slice(mention.length)}`;
   });
