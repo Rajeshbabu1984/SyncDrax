@@ -526,6 +526,135 @@ def send_email(to_email: str, subject: str, text_body: str, html_body: Optional[
 
 
 # -------------------------------------------------------------
+# Volt AI assistant
+# -------------------------------------------------------------
+VOLT_EMAIL = "volt@bot.synctact.internal"
+VOLT_USER_ID: Optional[int] = None
+_volt_busy: set = set()   # user ids with a Volt reply in progress (one AI call per user at a time)
+VOLT_SYSTEM_PROMPT = (
+    "You are Volt, the friendly AI assistant built into SyncTact, a team chat and video meeting app. "
+    "Answer clearly and concisely. Use Markdown (bold, lists, `code`, fenced code blocks) when it helps."
+)
+
+
+def _ensure_volt_user() -> None:
+    """Volt is a real (non-loginable) account so people can DM it like anyone else."""
+    global VOLT_USER_ID
+    with Session(engine) as s:
+        u = s.exec(select(User).where(User.email == VOLT_EMAIL)).first()
+        if not u:
+            # A random bcrypt hash that no password matches
+            u = User(name="Volt", email=VOLT_EMAIL, hashed_password=hash_password(secrets.token_urlsafe(32)),
+                     role="bot", status="AI assistant — ask me anything", title="Bot")
+            s.add(u); s.commit(); s.refresh(u)
+            log.info("Created Volt bot account (id %d)", u.id)
+        VOLT_USER_ID = u.id
+
+
+async def _volt_generate(contents: list, system: str = VOLT_SYSTEM_PROMPT) -> str:
+    """Call Gemini with a list of {role, parts} turns; always returns text to show the user."""
+    if not GEMINI_API_KEY:
+        return ("⚡ Volt: AI is not configured — set the `GEMINI_API_KEY` (or `Syntact_Key`) "
+                "environment variable on the server.")
+    try:
+        async with httpx.AsyncClient(timeout=30) as hc:
+            r = await hc.post(
+                GEMINI_URL,
+                headers={"x-goog-api-key": GEMINI_API_KEY},
+                json={"system_instruction": {"parts": [{"text": system}]}, "contents": contents},
+            )
+        if r.status_code != 200:
+            log.warning("Volt Gemini error %d: %s", r.status_code, r.text[:300])
+            try:
+                detail = r.json().get("error", {}).get("message", "unknown error")
+            except ValueError:
+                detail = "unknown error"
+            return f"⚡ Volt: Gemini API error {r.status_code} — {detail}"
+        cand = (r.json().get("candidates") or [{}])[0]
+        text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", [])).strip()
+        return text[:4000] or "⚡ Volt: I couldn't come up with a reply to that — try rephrasing?"
+    except Exception as e:
+        log.warning("Volt AI error: %s", e)
+        return "⚡ Volt: I couldn't reach the AI service just now. Please try again."
+
+
+async def _volt_dm_reply(user_id: int) -> None:
+    """Answer the latest message in a user's private conversation with Volt."""
+    if user_id in _volt_busy:
+        return
+    _volt_busy.add(user_id)
+    try:
+        # Messages sent while a reply was being generated get answered in the next round.
+        for _ in range(3):
+            await _volt_dm_reply_inner(user_id)
+            with Session(engine) as s:
+                last = s.exec(
+                    select(ChatMessage).where(
+                        ChatMessage.channel_id == None,  # noqa: E711
+                        ((ChatMessage.sender_id == user_id) & (ChatMessage.dm_to_user_id == VOLT_USER_ID)) |
+                        ((ChatMessage.sender_id == VOLT_USER_ID) & (ChatMessage.dm_to_user_id == user_id)),
+                    ).order_by(ChatMessage.id.desc()).limit(1)
+                ).first()
+            if not last or last.sender_id == VOLT_USER_ID or not last.content:
+                break
+    finally:
+        _volt_busy.discard(user_id)
+
+
+async def _volt_send_typing(user_id: int) -> None:
+    await _chat_send(user_id, {"type": "typing", "user_id": VOLT_USER_ID, "user_name": "Volt",
+                               "to_user_id": user_id})
+
+
+async def _volt_typing(user_id: int) -> None:
+    # The client clears "is typing" after 3 s, so keep refreshing it while the AI works.
+    while True:
+        await asyncio.sleep(2.5)
+        await _volt_send_typing(user_id)
+
+
+async def _volt_dm_reply_inner(user_id: int) -> None:
+    await _volt_send_typing(user_id)
+    typing = asyncio.create_task(_volt_typing(user_id))
+    try:
+        await _volt_dm_reply_generate(user_id)
+    finally:
+        typing.cancel()
+
+
+async def _volt_dm_reply_generate(user_id: int) -> None:
+    with Session(engine) as s:
+        from sqlalchemy import or_, and_
+        hist = s.exec(
+            select(ChatMessage).where(
+                ChatMessage.channel_id == None,  # noqa: E711
+                or_(and_(ChatMessage.sender_id == user_id, ChatMessage.dm_to_user_id == VOLT_USER_ID),
+                    and_(ChatMessage.sender_id == VOLT_USER_ID, ChatMessage.dm_to_user_id == user_id)),
+            ).order_by(ChatMessage.created_at.desc()).limit(20)
+        ).all()
+    contents = []
+    for m in reversed(hist):
+        if not m.content:
+            continue
+        role = "model" if m.sender_id == VOLT_USER_ID else "user"
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"][0]["text"] += "\n" + m.content
+        else:
+            contents.append({"role": role, "parts": [{"text": m.content}]})
+    while contents and contents[0]["role"] != "user":
+        contents.pop(0)
+    if not contents:
+        return
+    reply = await _volt_generate(contents)
+    with Session(engine) as s:
+        cm = ChatMessage(channel_id=None, dm_to_user_id=user_id, sender_id=VOLT_USER_ID,
+                         sender_name="Volt", content=reply, bot_name="Volt")
+        s.add(cm); s.commit(); s.refresh(cm)
+        d = _msg_dict(cm)
+    await _chat_send(user_id, {"type": "dm", "message": d})
+
+
+# -------------------------------------------------------------
 # JWT
 # -------------------------------------------------------------
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -731,6 +860,7 @@ def on_startup():
         (3, "\U0001f6e0 dev",      "Engineering discussions"),
         (4, "\U0001f4e2 updates",  "Product and release updates"),
     ]
+    _ensure_volt_user()
     with Session(engine) as session:
         existing = session.exec(select(Channel)).all()
         if not existing:
@@ -1877,7 +2007,8 @@ def list_chat_users(
     session: Session = Depends(get_session),
 ):
     users = session.exec(select(User).where(User.id != current_user.id)).all()
-    return [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url, "status": u.status, "title": u.title} for u in users]
+    return [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url, "status": u.status, "title": u.title,
+             "is_bot": u.role == "bot"} for u in users]
 
 
 @app.get("/chat/dm/{other_user_id}/messages")
@@ -3345,24 +3476,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                         f"User ({uname}) says: {prompt_text}\n\n"
                         f"Reply helpfully and concisely (2-3 sentences max)."
                     )
-                    _volt_reply = None
-                    if not GEMINI_API_KEY:
-                        _volt_reply = "⚡ Volt: AI is not configured — the `Syntact_Key` environment variable is missing on the server."
-                    else:
-                        try:
-                            async with httpx.AsyncClient(timeout=15) as hc:
-                                r = await hc.post(
-                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-                                    json={"contents": [{"parts": [{"text": ai_prompt}]}]},
-                                )
-                            if r.status_code == 200:
-                                _volt_reply = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                            else:
-                                log.warning("@Volt Gemini error %d: %s", r.status_code, r.text[:200])
-                                _volt_reply = f"⚡ Volt: Gemini API error {r.status_code} — {r.json().get('error',{}).get('message','unknown error')}"
-                        except Exception as _ve:
-                            log.warning("@Volt AI error: %s", _ve)
-                            _volt_reply = f"⚡ Volt: network error reaching Gemini — {_ve}"
+                    _volt_reply = await _volt_generate([{"role": "user", "parts": [{"text": ai_prompt}]}])
                     if _volt_reply:
                         with Session(engine) as vs:
                             volt_cm = ChatMessage(
@@ -3382,6 +3496,14 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     continue
                 with Session(engine) as session:
                     if not session.get(User, to_uid):
+                        continue
+                    if to_uid == VOLT_USER_ID:
+                        cm = ChatMessage(channel_id=None, dm_to_user_id=to_uid, sender_id=user_id,
+                                         sender_name=uname, content=content, file_url=file_url, file_name=file_name)
+                        session.add(cm); session.commit(); session.refresh(cm)
+                        await _chat_send(user_id, {"type": "dm", "message": _msg_dict(cm)})
+                        if content:
+                            asyncio.create_task(_volt_dm_reply(user_id))
                         continue
                     blocked = session.exec(select(UserBlock).where(
                         UserBlock.blocker_id == to_uid, UserBlock.blocked_id == user_id)).first()

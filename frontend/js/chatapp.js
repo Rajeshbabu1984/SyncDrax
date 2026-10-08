@@ -356,6 +356,7 @@ function handleServerMsg(msg) {
       const m  = msg.message;
       const other = m.sender_id === user.id ? m.dm_to_user_id : m.sender_id;
       if (activeType === 'dm' && activeId === other) {
+        if (m.sender_id === other) typingBar.textContent = '';
         appendMessage(m, false);
         scrollToBottom();
       } else if (m.sender_id !== user.id) {
@@ -705,14 +706,16 @@ async function loadUsers() {
   if (!res.ok) return;
   allUsers = await res.json();
   allUsers.forEach(u => {
-    dmUsers[u.id] = { name: u.name, online: false, avatar_url: u.avatar_url, status: u.status };
+    dmUsers[u.id] = { name: u.name, online: !!u.is_bot, avatar_url: u.avatar_url, status: u.status, is_bot: !!u.is_bot };
   });
   renderDmList();
 }
 
 function renderDmList() {
   dmListEl.innerHTML = '';
-  Object.entries(dmUsers).forEach(([uid, info]) => {
+  // Bots (Volt) are pinned to the top of the list
+  const entries = Object.entries(dmUsers).sort(([, a], [, b]) => (b.is_bot ? 1 : 0) - (a.is_bot ? 1 : 0));
+  entries.forEach(([uid, info]) => {
     const li = document.createElement('li');
     const numId = parseInt(uid);
     li.className = `ch-item${activeType === 'dm' && activeId === numId ? ' active' : ''}`;
@@ -722,7 +725,7 @@ function renderDmList() {
     const statusText = info.status ? `<span style="font-size:.65rem;color:var(--text-muted);margin-left:4px;">${esc(info.status)}</span>` : '';
     const avatarInner = info.avatar_url
       ? `<img class="dm-avatar-img" src="${API + info.avatar_url}" alt="" />`
-      : initial;
+      : info.is_bot ? '⚡' : initial;
     li.innerHTML = `
       <div class="dm-avatar">${avatarInner}<span class="dm-dot${info.online ? ' online' : ''}"></span></div>
       <span class="ch-name">${esc(info.name)}</span>${statusText}${badge}`;
