@@ -2378,7 +2378,7 @@ def remove_bad_word(
 
 
 @app.get("/mod/audit")
-def get_audit_log(
+def get_mod_audit_log(
     limit: int = 100,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
