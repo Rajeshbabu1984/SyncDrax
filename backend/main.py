@@ -8,7 +8,7 @@ Run:
 
 Endpoints:
     WS   /ws/{room_code}/{peer_id}/{display_name}   � WebRTC signaling
-    POST /auth/signup                               � Create account
+    POST /auth/verify-and-signup                    � Create account
     POST /auth/signin                               � Sign in, get JWT
     GET  /auth/me                                   � Get current user
     GET  /health                                    � Health check
@@ -43,7 +43,7 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status, UploadFile, File, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status, UploadFile, File, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
@@ -60,10 +60,15 @@ load_dotenv()
 # -------------------------------------------------------------
 # Config
 # -------------------------------------------------------------
-SECRET_KEY        = os.getenv("SECRET_KEY", "syncdrax-dev-secret-change-in-production")
+# Without SECRET_KEY a random key is used, so tokens stop working on every restart.
+SECRET_KEY        = os.getenv("SECRET_KEY") or secrets.token_urlsafe(48)
 ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
-ADMIN_KEY         = os.getenv("ADMIN_KEY", "synctact-admin-2026")
+# Without ADMIN_KEY the admin-key endpoints are disabled.
+ADMIN_KEY         = os.getenv("ADMIN_KEY", "")
+# Only for local development: return signup verification codes in the API response when SMTP is not configured.
+EMAIL_DEV_MODE    = os.getenv("EMAIL_DEV_MODE", "").lower() in ("1", "true", "yes")
+MAX_UPLOAD_BYTES  = 25 * 1024 * 1024
 GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_URL        = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -197,7 +202,6 @@ class RecurringTask(SQLModel, table=True):
     last_run:         Optional[datetime] = Field(default=None) # last time it fired
     active:           bool               = Field(default=True)
     open_url:         Optional[str]      = Field(default=None)   # browser URL to auto-open when task fires
-    shell_cmd:        Optional[str]      = Field(default=None)   # server-side shell command to run
     url_target:       str                = Field(default="self")  # "self" = only owner | "channel" = everyone (channel owner only)
     created_at:       datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -520,29 +524,102 @@ def get_current_user(
 ) -> User:
     if not creds:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    try:
-        payload = decode_token(creds.credentials)
-        user_id = int(payload["sub"])
-    except (JWTError, KeyError, ValueError):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = session.get(User, user_id)
+    user = _user_for_token(creds.credentials, session)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if user.banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account banned")
     return user
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _user_for_token(token: str, session: Session) -> Optional[User]:
+    """Return the user for a valid JWT whose session has not been revoked."""
+    try:
+        user_id = int(decode_token(token)["sub"])
+    except (JWTError, KeyError, ValueError):
+        return None
+    active = session.exec(select(UserSession).where(
+        UserSession.token_hash == _token_hash(token),
+        UserSession.user_id == user_id,
+        UserSession.active == True,  # noqa: E712
+    )).first()
+    if not active:
+        return None
+    return session.get(User, user_id)
+
+
+def _is_staff(user: User) -> bool:
+    return getattr(user, "role", "member") in ("admin", "moderator")
+
+
+def _can_manage_channel(user: User, ch: Optional["Channel"]) -> bool:
+    """Staff can manage any channel; owners can manage their own. System channels (created_by=0) are staff-only."""
+    if not ch:
+        return False
+    return _is_staff(user) or (ch.created_by != 0 and ch.created_by == user.id)
+
+
+def _can_view_message(user: User, cm: "ChatMessage") -> bool:
+    if cm.channel_id is not None:
+        return True
+    return user.id in (cm.sender_id, cm.dm_to_user_id)
+
+
+def _admin_key_ok(key: Optional[str]) -> bool:
+    return bool(ADMIN_KEY) and bool(key) and secrets.compare_digest(key, ADMIN_KEY)
+
+
+def require_staff(
+    x_admin_key: Optional[str] = Header(default=None),
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    session: Session = Depends(get_session),
+) -> User:
+    """Moderator/admin user, or the admin panel authenticating with X-Admin-Key."""
+    if _admin_key_ok(x_admin_key):
+        return User(id=0, name="Admin", email="", hashed_password="", role="admin")
+    user = get_current_user(creds, session)
+    if not _is_staff(user):
+        raise HTTPException(status_code=403, detail="Moderators only")
+    return user
+
+
+def require_staff_or_channel_owner(
+    channel_id: Optional[int] = None,
+    x_admin_key: Optional[str] = Header(default=None),
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    session: Session = Depends(get_session),
+) -> User:
+    """Like require_staff, but also lets the owner of `channel_id` through."""
+    if _admin_key_ok(x_admin_key):
+        return User(id=0, name="Admin", email="", hashed_password="", role="admin")
+    user = get_current_user(creds, session)
+    if _is_staff(user):
+        return user
+    if channel_id is not None and _can_manage_channel(user, session.get(Channel, channel_id)):
+        return user
+    raise HTTPException(status_code=403, detail="Only the channel owner or a moderator can do this")
+
+
+def _create_session(session: Session, user: User, request: Request) -> str:
+    token = create_token(user.id, user.email)
+    ua = request.headers.get("user-agent", "")[:200]
+    session.add(UserSession(user_id=user.id, token_hash=_token_hash(token), device=ua,
+                            ip_addr=get_remote_address(request)))
+    session.commit()
+    return token
 
 
 # -------------------------------------------------------------
 # Pydantic request / response schemas
 # -------------------------------------------------------------
-class SignUpRequest(BaseModel):
-    name:     str
-    email:    str
-    password: str
-
-
 class SignInRequest(BaseModel):
-    email:    str
-    password: str
+    email:     str
+    password:  str
+    totp_code: Optional[str] = None
 
 
 class RequestVerificationRequest(BaseModel):
@@ -623,7 +700,11 @@ def on_startup():
     create_db_tables()
     migrate_db()
     _reload_bad_words()
-    log.info("Database ready at %s", DATABASE_URL)
+    log.info("Database ready")
+    if not os.getenv("SECRET_KEY"):
+        log.warning("SECRET_KEY is not set: using a random key, so all sessions end when the server restarts")
+    if not ADMIN_KEY:
+        log.warning("ADMIN_KEY is not set: admin-key endpoints are disabled")
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
         (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
@@ -694,14 +775,6 @@ async def _run_scheduler():
                         elapsed = (now - rt.last_run.replace(tzinfo=timezone.utc)).total_seconds() / 60
                         due = elapsed >= rt.interval_minutes
                     if due:
-                        # Run optional server-side shell command
-                        if rt.shell_cmd:
-                            try:
-                                import subprocess as _sp
-                                _sp.Popen(rt.shell_cmd, shell=True,
-                                          stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-                            except Exception as _se:
-                                log.warning("Task shell_cmd error: %s", _se)
                         cm = ChatMessage(
                             channel_id=rt.channel_id,
                             sender_id=0,
@@ -716,21 +789,8 @@ async def _run_scheduler():
                         sess.refresh(cm)
                         if cm.channel_id:
                             _bcast = {"type": "channel_message", "message": _msg_dict(cm)}
-                            if rt.open_url:
-                                # Determine who gets the URL opened in their browser
-                                target = rt.url_target or "self"
-                                if target == "channel":
-                                    # Allow if task owner is channel owner OR system channel
-                                    ch = sess.get(Channel, rt.channel_id)
-                                    if ch and (ch.created_by == 0 or ch.created_by == rt.owner_id):
-                                        _bcast["open_url"] = rt.open_url
-                                        # open_url_for_uid absent → everyone
-                                    else:
-                                        _bcast["open_url"] = rt.open_url
-                                        _bcast["open_url_for_uid"] = rt.owner_id
-                                else:  # "self"
-                                    _bcast["open_url"] = rt.open_url
-                                    _bcast["open_url_for_uid"] = rt.owner_id
+                            _bcast.update(_open_url_fields(sess, rt.open_url, rt.url_target or "self",
+                                                           rt.owner_id, rt.channel_id))
                             await _chat_broadcast(_bcast)
         except Exception as exc:
             log.warning("Scheduler error: %s", exc)
@@ -744,11 +804,14 @@ async def start_scheduler():
 # -------------------------------------------------------------
 # Auth endpoints
 # -------------------------------------------------------------
+MAX_VERIFY_ATTEMPTS = 5
+
+
 @app.post("/auth/request-verification")
 @limiter.limit("3/minute")
 def request_verification(req: RequestVerificationRequest, request: Request, session: Session = Depends(get_session)):
     """Step 1: Send verification code to email before signup"""
-    req.name  = req.name.strip()
+    req.name  = req.name.strip()[:64]
     req.email = req.email.strip().lower()
 
     if not req.name or not req.email or not req.password:
@@ -756,27 +819,25 @@ def request_verification(req: RequestVerificationRequest, request: Request, sess
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
-    # Check if email already exists
     existing = session.exec(select(User).where(User.email == req.email)).first()
     if existing:
         raise HTTPException(status_code=409, detail="An account with that email already exists")
 
-    # Generate 6-digit code
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
-    
-    # Store verification data (expires in 10 minutes)
     verification_codes[req.email] = {
         "code": code,
         "name": req.name,
-        "password": req.password,
-        "expires": time.time() + 600  # 10 minutes
+        "password_hash": hash_password(req.password),
+        "expires": time.time() + 600,
+        "attempts": 0,
     }
 
-    # Send email
     if not send_verification_email(req.email, code):
-        # If email sending is not configured, return code in response for testing
-        log.warning("Email not configured — returning code in response for testing")
-        return {"message": "Verification code sent (testing mode)", "code": code}
+        if EMAIL_DEV_MODE:
+            log.warning("EMAIL_DEV_MODE: returning verification code in response")
+            return {"message": "Verification code sent (testing mode)", "code": code}
+        del verification_codes[req.email]
+        raise HTTPException(status_code=503, detail="Email delivery is not configured on the server")
 
     log.info("Verification code sent to %s", req.email)
     return {"message": "Verification code sent to your email"}
@@ -789,77 +850,34 @@ def verify_and_signup(req: VerifyAndSignUpRequest, request: Request, session: Se
     req.email = req.email.strip().lower()
     req.code  = req.code.strip()
 
-    # Check if verification code exists
-    if req.email not in verification_codes:
+    stored = verification_codes.get(req.email)
+    if not stored:
         raise HTTPException(status_code=400, detail="No verification request found for this email")
 
-    stored = verification_codes[req.email]
-
-    # Check if expired
     if time.time() > stored["expires"]:
         del verification_codes[req.email]
         raise HTTPException(status_code=400, detail="Verification code expired. Please request a new one")
 
-    # Check if code matches
-    if req.code != stored["code"]:
+    if not secrets.compare_digest(req.code, stored["code"]):
+        stored["attempts"] += 1
+        if stored["attempts"] >= MAX_VERIFY_ATTEMPTS:
+            del verification_codes[req.email]
+            raise HTTPException(status_code=400, detail="Too many wrong codes. Please request a new one")
         raise HTTPException(status_code=400, detail="Invalid verification code")
 
-    # Code is valid — create user
-    name = stored["name"]
-    password = stored["password"]
-
-    # Double-check email doesn't exist (race condition safety)
     existing = session.exec(select(User).where(User.email == req.email)).first()
     if existing:
         del verification_codes[req.email]
         raise HTTPException(status_code=409, detail="An account with that email already exists")
 
-    user = User(name=name, email=req.email, hashed_password=hash_password(password))
+    user = User(name=stored["name"], email=req.email, hashed_password=stored["password_hash"])
     session.add(user)
     session.commit()
     session.refresh(user)
-
-    token = create_token(user.id, user.email)
-    tok_hash = hashlib.sha256(token.encode()).hexdigest()
-    ua = request.headers.get("user-agent", "")[:200]
-    ip = get_remote_address(request)
-    session.add(UserSession(user_id=user.id, token_hash=tok_hash, device=ua, ip_addr=ip))
-    session.commit()
-
-    # Clean up verification code
+    token = _create_session(session, user, request)
     del verification_codes[req.email]
 
     log.info("New user signed up (verified): %s (%s)", user.name, user.email)
-    return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
-
-
-@app.post("/auth/signup", response_model=AuthResponse)
-@limiter.limit("5/minute")
-def signup(req: SignUpRequest, request: Request, session: Session = Depends(get_session)):
-    req.name  = req.name.strip()
-    req.email = req.email.strip().lower()
-
-    if not req.name or not req.email or not req.password:
-        raise HTTPException(status_code=400, detail="All fields are required")
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-
-    existing = session.exec(select(User).where(User.email == req.email)).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="An account with that email already exists")
-
-    user = User(name=req.name, email=req.email, hashed_password=hash_password(req.password))
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-
-    token = create_token(user.id, user.email)
-    tok_hash = hashlib.sha256(token.encode()).hexdigest()
-    ua = request.headers.get("user-agent", "")[:200]
-    ip = get_remote_address(request)
-    session.add(UserSession(user_id=user.id, token_hash=tok_hash, device=ua, ip_addr=ip))
-    session.commit()
-    log.info("New user signed up: %s (%s)", user.name, user.email)
     return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
 
 
@@ -872,13 +890,12 @@ def signin(req: SignInRequest, request: Request, session: Session = Depends(get_
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if getattr(user, 'banned', False):
         raise HTTPException(status_code=403, detail="Account banned")
-    token = create_token(user.id, user.email)
-    tok_hash = hashlib.sha256(token.encode()).hexdigest()
-    ua = request.headers.get("user-agent", "")[:200]
-    ip = get_remote_address(request)
-    sess_rec = UserSession(user_id=user.id, token_hash=tok_hash, device=ua, ip_addr=ip)
-    session.add(sess_rec)
-    session.commit()
+    if user.totp_enabled:
+        if not req.totp_code:
+            raise HTTPException(status_code=401, detail="2fa_required")
+        if not pyotp.TOTP(user.totp_secret).verify(req.totp_code.strip(), valid_window=1):
+            raise HTTPException(status_code=401, detail="Invalid two-factor code")
+    token = _create_session(session, user, request)
     log.info("User signed in: %s (%s)", user.name, user.email)
     return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
 
@@ -912,14 +929,26 @@ def revoke_session(sid: int, current_user: User = Depends(get_current_user), ses
     session.add(row); session.commit()
     return {"ok": True}
 
+@app.post("/auth/signout")
+def signout(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+            session: Session = Depends(get_session)):
+    if creds:
+        row = session.exec(select(UserSession).where(UserSession.token_hash == _token_hash(creds.credentials))).first()
+        if row:
+            row.active = False
+            session.add(row); session.commit()
+    return {"ok": True}
+
 
 # -------------------------------------------------------------
 # 2FA endpoints
 # -------------------------------------------------------------
 @app.post("/auth/2fa/setup")
 def twofa_setup(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    secret = pyotp.random_base32()
     user = session.get(User, current_user.id)
+    if user.totp_enabled:
+        raise HTTPException(400, "2FA is already enabled; disable it first")
+    secret = pyotp.random_base32()
     user.totp_secret = secret
     session.add(user); session.commit()
     uri = pyotp.totp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="SyncTact")
@@ -933,7 +962,7 @@ def twofa_confirm(body: dict, current_user: User = Depends(get_current_user), se
     user = session.get(User, current_user.id)
     if not user.totp_secret:
         raise HTTPException(400, "2FA not set up")
-    if not pyotp.TOTP(user.totp_secret).verify(str(body.get("code", ""))):
+    if not pyotp.TOTP(user.totp_secret).verify(str(body.get("code", "")).strip(), valid_window=1):
         raise HTTPException(400, "Invalid code")
     user.totp_enabled = True
     session.add(user); session.commit()
@@ -944,13 +973,15 @@ def twofa_verify(body: dict, current_user: User = Depends(get_current_user), ses
     user = session.get(User, current_user.id)
     if not user.totp_enabled:
         raise HTTPException(400, "2FA not enabled")
-    if not pyotp.TOTP(user.totp_secret).verify(str(body.get("code", ""))):
+    if not pyotp.TOTP(user.totp_secret).verify(str(body.get("code", "")).strip(), valid_window=1):
         raise HTTPException(400, "Invalid code")
     return {"ok": True}
 
 @app.delete("/auth/2fa")
-def twofa_disable(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+def twofa_disable(code: str = "", current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     user = session.get(User, current_user.id)
+    if user.totp_enabled and not pyotp.TOTP(user.totp_secret).verify(code.strip(), valid_window=1):
+        raise HTTPException(400, "Enter a valid 2FA code to disable 2FA")
     user.totp_enabled = False; user.totp_secret = None
     session.add(user); session.commit()
     return {"ok": True}
@@ -1016,6 +1047,8 @@ def set_channel_role(channel_id: int, user_id: int, body: dict,
     if getattr(current_user, "role", "member") not in ("admin", "moderator"):
         raise HTTPException(403, "Insufficient permissions")
     role_val = body.get("role", "member")
+    if role_val not in ("admin", "moderator", "member"):
+        raise HTTPException(400, "role must be admin, moderator or member")
     row = session.exec(select(ChannelRole).where(ChannelRole.channel_id == channel_id, ChannelRole.user_id == user_id)).first()
     if row:
         row.role = role_val; session.add(row)
@@ -1030,6 +1063,8 @@ def set_channel_role(channel_id: int, user_id: int, body: dict,
 # -------------------------------------------------------------
 @app.get("/webhooks")
 def list_webhooks(channel_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    if not _can_manage_channel(current_user, session.get(Channel, channel_id)):
+        raise HTTPException(403, "Only the channel owner or a moderator can view webhooks")
     rows = session.exec(select(WebhookConfig).where(WebhookConfig.channel_id == channel_id, WebhookConfig.active == True)).all()
     return [{"id": r.id, "name": r.name, "token": r.token, "channel_id": r.channel_id} for r in rows]
 
@@ -1038,8 +1073,10 @@ def create_webhook(body: dict, current_user: User = Depends(get_current_user), s
     cid = body.get("channel_id"); name = body.get("name", "Webhook")
     if not cid:
         raise HTTPException(400, "channel_id required")
-    tok = hashlib.sha256(f"{cid}{name}{time.time()}".encode()).hexdigest()
-    wh = WebhookConfig(channel_id=cid, name=name, token=tok, created_by=current_user.id)
+    if not _can_manage_channel(current_user, session.get(Channel, cid)):
+        raise HTTPException(403, "Only the channel owner or a moderator can create webhooks")
+    tok = secrets.token_urlsafe(32)
+    wh = WebhookConfig(channel_id=cid, name=str(name)[:80], token=tok, created_by=current_user.id)
     session.add(wh); session.commit(); session.refresh(wh)
     return {"id": wh.id, "name": wh.name, "token": wh.token, "channel_id": wh.channel_id}
 
@@ -1048,6 +1085,8 @@ def delete_webhook(wid: int, current_user: User = Depends(get_current_user), ses
     row = session.get(WebhookConfig, wid)
     if not row:
         raise HTTPException(404)
+    if row.created_by != current_user.id and not _can_manage_channel(current_user, session.get(Channel, row.channel_id)):
+        raise HTTPException(403, "Not your webhook")
     row.active = False; session.add(row); session.commit()
     return {"ok": True}
 
@@ -1103,7 +1142,7 @@ def export_channel(channel_id: int, format: str = "json",
 # -------------------------------------------------------------
 @app.get("/audit-log")
 def get_audit_log(limit: int = 50, channel_id: Optional[int] = None,
-                  current_user: User = Depends(get_current_user),
+                  current_user: User = Depends(require_staff),
                   session: Session = Depends(get_session)):
     q = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
     if channel_id:
@@ -1487,7 +1526,7 @@ class NotifPrefIn(BaseModel):
 @app.patch("/notif-prefs")
 def update_notif_prefs(body: NotifPrefIn, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     from sqlmodel import text as sql_text
-    for k, v in [("notif_sounds", str(body.sounds_enabled)), ("notif_theme_" + str(current_user.id), body.sound_theme)]:
+    for k, v in [("notif_sounds_" + str(current_user.id), str(body.sounds_enabled)), ("notif_theme_" + str(current_user.id), body.sound_theme)]:
         existing = session.exec(select(ServerSetting).where(ServerSetting.key == k)).first()
         if existing:
             existing.value = v; session.add(existing)
@@ -1531,11 +1570,8 @@ async def trigger_email_digest(current_user: User = Depends(get_current_user), s
 # -------------------------------------------------------------
 # Admin endpoints
 # -------------------------------------------------------------
-from fastapi import Header
-
-
 def require_admin(x_admin_key: Optional[str] = Header(default=None)):
-    if not x_admin_key or x_admin_key != ADMIN_KEY:
+    if not _admin_key_ok(x_admin_key):
         raise HTTPException(status_code=403, detail="Forbidden: invalid admin key")
 
 
@@ -1597,17 +1633,6 @@ async def broadcast_to_room(room_code: str, payload: dict, exclude: str | None =
 @app.get("/health")
 async def health():
     return {"status": "ok", "rooms": len(rooms)}
-
-
-@app.get("/debug/volt")
-async def debug_volt():
-    key = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
-    return {
-        "key_loaded": bool(key),
-        "key_preview": (key[:6] + "…" + key[-4:]) if len(key) > 10 else ("(empty)" if not key else key),
-        "env_var_Syntact_Key": bool(os.getenv("Syntact_Key")),
-        "env_var_GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
-    }
 
 
 @app.get("/rooms")
@@ -1764,7 +1789,6 @@ def _task_dict(t: RecurringTask) -> dict:
         "last_run":         t.last_run.isoformat() if t.last_run else None,
         "active":           t.active,
         "open_url":         t.open_url,
-        "shell_cmd":        t.shell_cmd,
         "url_target":       t.url_target or "self",
         "created_at":       t.created_at.isoformat(),
     }
@@ -1781,6 +1805,45 @@ async def _chat_send(user_id: int, payload: dict):
     ws = chat_connections.get(user_id)
     if ws:
         await safe_send(ws, payload)
+
+
+async def _send_for_message(cm: ChatMessage, payload: dict):
+    """Broadcast an event about a message: to everyone for channel messages, only to the two participants for DMs."""
+    if cm.channel_id is not None:
+        await _chat_broadcast(payload)
+    else:
+        for uid in {cm.sender_id, cm.dm_to_user_id}:
+            if uid:
+                await _chat_send(uid, payload)
+
+
+_ALLOWED_GIF_HOSTS = ("giphy.com", "tenor.com", "googleusercontent.com")
+
+
+def _safe_file_url(url) -> Optional[str]:
+    """Only allow our own uploads or https GIFs from known providers in message attachments."""
+    if not url:
+        return None
+    url = str(url)
+    if url.startswith("/uploads/") and ".." not in url and all(c not in url for c in "\"'<> \\"):
+        return url
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+    except ValueError:
+        return None
+    host = (p.hostname or "").lower()
+    if p.scheme == "https" and any(host == h or host.endswith("." + h) for h in _ALLOWED_GIF_HOSTS) \
+            and all(c not in url for c in "\"'<> \\"):
+        return url
+    return None
+
+
+def _clean_emoji(emoji) -> Optional[str]:
+    emoji = str(emoji or "")
+    if not emoji or len(emoji) > 16 or any(c in emoji for c in "<>\"'&`=/\\"):
+        return None
+    return emoji
 
 
 # -------------------------------------------------------------
@@ -1896,9 +1959,15 @@ async def upload_file(
     safe_ext = ext if ext in allowed else ".bin"
     fname    = f"{current_user.id}_{int(_time.time() * 1000)}{safe_ext}"
     dest     = os.path.join(UPLOADS_DIR, fname)
+    written  = 0
     with open(dest, "wb") as fh:
-        shutil.copyfileobj(file.file, fh)
-    return {"url": f"/uploads/{fname}", "name": original}
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > MAX_UPLOAD_BYTES:
+                fh.close(); os.remove(dest)
+                raise HTTPException(413, f"File must be under {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+            fh.write(chunk)
+    return {"url": f"/uploads/{fname}", "name": original[:200]}
 
 
 @app.delete("/chat/channels/{channel_id}", status_code=200)
@@ -1932,8 +2001,12 @@ async def delete_message(
     cm = session.get(ChatMessage, msg_id)
     if not cm:
         raise HTTPException(status_code=404, detail="Message not found")
-    # Bot messages (sender_id=0) can be deleted by anyone; regular messages by sender only
-    if cm.sender_id != 0 and cm.sender_id != current_user.id:
+    is_own = cm.sender_id == current_user.id and cm.sender_id != 0
+    if cm.channel_id is not None:
+        allowed = is_own or _can_manage_channel(current_user, session.get(Channel, cm.channel_id))
+    else:
+        allowed = is_own or (cm.sender_id == 0 and _can_view_message(current_user, cm))
+    if not allowed:
         raise HTTPException(status_code=403, detail="You can only delete your own messages")
     _log_audit(session, "delete_message", current_user.id, current_user.name,
                channel_id=cm.channel_id, detail=cm.content[:200] if cm.content else None)
@@ -1953,12 +2026,15 @@ async def toggle_pin(
     # Only the channel owner can pin (DM messages: either participant can pin)
     if cm.channel_id:
         ch = session.get(Channel, cm.channel_id)
-        if ch and ch.created_by != 0 and ch.created_by != current_user.id:
+        if ch and ch.created_by != 0 and ch.created_by != current_user.id and not _is_staff(current_user):
             raise HTTPException(status_code=403, detail="Only the channel owner can pin messages")
+    elif not _can_view_message(current_user, cm):
+        raise HTTPException(status_code=404, detail="Message not found")
     cm.pinned = not bool(cm.pinned)
     session.add(cm)
     session.commit()
-    await _chat_broadcast({"type": "pin_update", "message_id": msg_id, "pinned": cm.pinned})
+    payload = {"type": "pin_update", "message_id": msg_id, "pinned": cm.pinned}
+    await _send_for_message(cm, payload)
     return {"pinned": cm.pinned}
 
 
@@ -2027,6 +2103,9 @@ def get_thread(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    parent = session.get(ChatMessage, msg_id)
+    if not parent or not _can_view_message(current_user, parent):
+        raise HTTPException(404, "Message not found")
     msgs = session.exec(
         select(ChatMessage).where(ChatMessage.parent_id == msg_id)
         .order_by(ChatMessage.created_at)
@@ -2127,14 +2206,19 @@ async def vote_poll(
     session: Session = Depends(get_session),
 ):
     poll = session.get(Poll, poll_id)
-    if not poll:
+    if not poll or not _can_view_poll(current_user, poll):
         raise HTTPException(404, "Poll not found")
+    try:
+        opt_idx = int(body.get("option_index", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Invalid option")
+    if not 0 <= opt_idx < len(json.loads(poll.options_json)):
+        raise HTTPException(400, "Invalid option")
     existing = session.exec(
         select(PollVote).where(PollVote.poll_id == poll_id, PollVote.user_id == current_user.id)
     ).first()
     if existing:
         session.delete(existing); session.commit()
-    opt_idx = int(body.get("option_index", 0))
     session.add(PollVote(poll_id=poll_id, user_id=current_user.id, option_index=opt_idx))
     session.commit()
     pd = _poll_dict(poll, session)
@@ -2142,8 +2226,12 @@ async def vote_poll(
         await _chat_broadcast({"type": "poll_update", "poll": pd})
     elif poll.dm_to_user_id:
         await _chat_send(poll.dm_to_user_id, {"type": "poll_update", "poll": pd})
-        await _chat_send(current_user.id,    {"type": "poll_update", "poll": pd})
+        await _chat_send(poll.creator_id,    {"type": "poll_update", "poll": pd})
     return pd
+
+
+def _can_view_poll(user: User, poll: Poll) -> bool:
+    return poll.channel_id is not None or user.id in (poll.creator_id, poll.dm_to_user_id)
 
 
 @app.get("/chat/polls/{poll_id}")
@@ -2153,7 +2241,7 @@ def get_poll(
     session: Session = Depends(get_session),
 ):
     poll = session.get(Poll, poll_id)
-    if not poll:
+    if not poll or not _can_view_poll(current_user, poll):
         raise HTTPException(404)
     return _poll_dict(poll, session)
 
@@ -2196,11 +2284,13 @@ async def mute_user(
     target = session.get(User, body.user_id)
     if not target:
         raise HTTPException(404, "User not found")
-    # Check permission: channel owner if channel_id given, else admin key required
     if body.channel_id:
-        ch = session.get(Channel, body.channel_id)
-        if not ch or (ch.created_by != 0 and ch.created_by != current_user.id):
-            raise HTTPException(403, "Only the channel owner can mute in this channel")
+        if not _can_manage_channel(current_user, session.get(Channel, body.channel_id)):
+            raise HTTPException(403, "Only the channel owner or a moderator can mute in this channel")
+    elif not _is_staff(current_user):
+        raise HTTPException(403, "Only moderators can mute server-wide")
+    if _is_staff(target) and current_user.role != "admin":
+        raise HTTPException(403, "Cannot mute a moderator or admin")
     muted_until = None
     if body.minutes:
         muted_until = datetime.now(timezone.utc) + timedelta(minutes=body.minutes)
@@ -2227,7 +2317,7 @@ async def mute_user(
 def unmute_user(
     user_id: int,
     channel_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
+    actor: User = Depends(require_staff_or_channel_owner),
     session: Session = Depends(get_session),
 ):
     stmt = select(MutedUser).where(MutedUser.user_id == user_id)
@@ -2237,6 +2327,7 @@ def unmute_user(
     for m in existing:
         session.delete(m)
     session.commit()
+    _log_audit(session, "unmute_user", actor.id, actor.name, user_id, None, channel_id)
     return {"ok": True}
 
 
@@ -2250,9 +2341,10 @@ async def kick_user(
     target = session.get(User, user_id)
     if not target:
         raise HTTPException(404, "User not found")
-    ch = session.get(Channel, channel_id)
-    if not ch or (ch.created_by != 0 and ch.created_by != current_user.id):
-        raise HTTPException(403, "Only the channel owner can kick users")
+    if not _can_manage_channel(current_user, session.get(Channel, channel_id)):
+        raise HTTPException(403, "Only the channel owner or a moderator can kick users")
+    if _is_staff(target) and current_user.role != "admin":
+        raise HTTPException(403, "Cannot kick a moderator or admin")
     existing = session.exec(
         select(KickedUser).where(KickedUser.user_id == user_id, KickedUser.channel_id == channel_id)
     ).first()
@@ -2270,7 +2362,7 @@ async def kick_user(
 def unkick_user(
     user_id: int,
     channel_id: int,
-    current_user: User = Depends(get_current_user),
+    actor: User = Depends(require_staff_or_channel_owner),
     session: Session = Depends(get_session),
 ):
     existing = session.exec(
@@ -2278,36 +2370,43 @@ def unkick_user(
     ).first()
     if existing:
         session.delete(existing); session.commit()
+    _log_audit(session, "unkick_user", actor.id, actor.name, user_id, None, channel_id)
     return {"ok": True}
 
 
 @app.post("/mod/ban/{user_id}")
 async def ban_user(
     user_id: int,
-    x_admin_key: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
+    actor: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
-    from fastapi import Header
     target = session.get(User, user_id)
     if not target:
         raise HTTPException(404, "User not found")
+    if target.id == actor.id:
+        raise HTTPException(400, "Cannot ban yourself")
+    if _is_staff(target) and actor.role != "admin":
+        raise HTTPException(403, "Only admins can ban moderators or admins")
     target.banned = True
-    session.add(target); session.commit()
-    _log_audit(session, "ban_user", current_user.id, current_user.name, target.id, target.name)
+    session.add(target)
+    for s in session.exec(select(UserSession).where(UserSession.user_id == user_id)).all():
+        s.active = False
+        session.add(s)
+    session.commit()
+    _log_audit(session, "ban_user", actor.id, actor.name, target.id, target.name)
     # Force disconnect banned user
-    await _chat_send(user_id, {"type": "moderation", "action": "banned", "by": current_user.name})
+    await _chat_send(user_id, {"type": "moderation", "action": "banned", "by": actor.name})
     ws = chat_connections.get(user_id)
     if ws:
-        try: await ws.close()
-        except: pass
+        try: await ws.close(code=4003)
+        except Exception: pass
     return {"ok": True}
 
 
 @app.delete("/mod/ban/{user_id}")
 def unban_user(
     user_id: int,
-    current_user: User = Depends(get_current_user),
+    actor: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     target = session.get(User, user_id)
@@ -2315,6 +2414,7 @@ def unban_user(
         raise HTTPException(404, "User not found")
     target.banned = False
     session.add(target); session.commit()
+    _log_audit(session, "unban_user", actor.id, actor.name, target.id, target.name)
     return {"ok": True}
 
 
@@ -2328,8 +2428,8 @@ async def set_slowmode(
     ch = session.get(Channel, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
-    if ch.created_by != 0 and ch.created_by != current_user.id:
-        raise HTTPException(403, "Only the channel owner can set slowmode")
+    if not _can_manage_channel(current_user, ch):
+        raise HTTPException(403, "Only the channel owner or a moderator can set slowmode")
     ch.slowmode_seconds = max(0, min(body.seconds, 3600))
     session.add(ch); session.commit()
     await _chat_broadcast({"type": "slowmode_update", "channel_id": channel_id,
@@ -2339,7 +2439,7 @@ async def set_slowmode(
 
 @app.get("/mod/badwords")
 def list_bad_words(
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     return [{"id": bw.id, "word": bw.word} for bw in session.exec(select(BadWord)).all()]
@@ -2348,16 +2448,16 @@ def list_bad_words(
 @app.post("/mod/badwords", status_code=201)
 def add_bad_word(
     body: BadWordRequest,
-    current_user: User = Depends(get_current_user),
+    actor: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
-    w = body.word.strip().lower()
+    w = body.word.strip().lower()[:64]
     if not w:
         raise HTTPException(400, "Word required")
     existing = session.exec(select(BadWord).where(BadWord.word == w)).first()
     if existing:
         return {"id": existing.id, "word": existing.word}
-    bw = BadWord(word=w, added_by=current_user.id)
+    bw = BadWord(word=w, added_by=actor.id)
     session.add(bw); session.commit(); session.refresh(bw)
     _reload_bad_words()
     return {"id": bw.id, "word": bw.word}
@@ -2366,7 +2466,7 @@ def add_bad_word(
 @app.delete("/mod/badwords/{word_id}")
 def remove_bad_word(
     word_id: int,
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     bw = session.get(BadWord, word_id)
@@ -2380,7 +2480,7 @@ def remove_bad_word(
 @app.get("/mod/audit")
 def get_mod_audit_log(
     limit: int = 100,
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     logs = session.exec(
@@ -2393,7 +2493,7 @@ def get_mod_audit_log(
 
 @app.get("/mod/muted")
 def list_muted(
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     muted = session.exec(select(MutedUser)).all()
@@ -2408,7 +2508,7 @@ def list_muted(
 
 @app.get("/mod/kicked")
 def list_kicked(
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     kicked = session.exec(select(KickedUser)).all()
@@ -2422,7 +2522,7 @@ def list_kicked(
 
 @app.get("/mod/banned")
 def list_banned(
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
     session: Session = Depends(get_session),
 ):
     users = session.exec(select(User).where(User.banned == True)).all()  # noqa: E712
@@ -2464,10 +2564,12 @@ async def forward_message(
     session: Session = Depends(get_session),
 ):
     orig = session.get(ChatMessage, msg_id)
-    if not orig:
+    if not orig or not _can_view_message(current_user, orig):
         raise HTTPException(404, "Message not found")
     channel_id    = body.get("channel_id")
     dm_to_user_id = body.get("dm_to_user_id")
+    if not channel_id and not dm_to_user_id:
+        raise HTTPException(400, "channel_id or dm_to_user_id required")
     cm = ChatMessage(
         channel_id=channel_id,
         dm_to_user_id=dm_to_user_id,
@@ -2501,7 +2603,7 @@ async def list_bookmarks(
     result = []
     for b in bms:
         cm = session.get(ChatMessage, b.message_id)
-        if cm:
+        if cm and _can_view_message(current_user, cm):
             d = _msg_dict(cm); d["bookmark_id"] = b.id
             result.append(d)
     return result
@@ -2517,6 +2619,9 @@ async def add_bookmark(
         Bookmark.user_id == current_user.id, Bookmark.message_id == msg_id)).first()
     if existing:
         return {"detail": "Already bookmarked", "id": existing.id}
+    cm = session.get(ChatMessage, msg_id)
+    if not cm or not _can_view_message(current_user, cm):
+        raise HTTPException(404, "Message not found")
     bm = Bookmark(user_id=current_user.id, message_id=msg_id)
     session.add(bm); session.commit(); session.refresh(bm)
     return {"detail": "Bookmarked", "id": bm.id}
@@ -2571,7 +2676,7 @@ async def update_my_profile(
     session: Session = Depends(get_session),
 ):
     u = session.get(User, current_user.id)
-    if body.name   is not None: u.name   = body.name.strip()[:64]
+    if body.name   is not None and body.name.strip(): u.name = body.name.strip()[:64]
     if body.status is not None: u.status = body.status.strip()[:120]
     if body.bio    is not None: u.bio    = body.bio.strip()[:300]
     if body.title  is not None: u.title  = body.title.strip()[:60] if body.title.strip() else None
@@ -2591,6 +2696,8 @@ async def upload_avatar(
     session: Session = Depends(get_session),
 ):
     ext   = os.path.splitext(file.filename or "")[1].lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        raise HTTPException(400, "Avatar must be a PNG, JPEG, GIF or WebP image")
     fname = f"av_{current_user.id}{ext}"
     dest  = os.path.join(AVATAR_DIR, fname)
     content = await file.read()
@@ -2670,7 +2777,7 @@ async def set_channel_category(
     ch = session.get(Channel, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
-    if ch.created_by != current_user.id and ch.created_by != 0:
+    if not _can_manage_channel(current_user, ch):
         raise HTTPException(403, "Not your channel")
     ch.category_id = body.get("category_id")
     session.add(ch); session.commit()
@@ -2728,16 +2835,49 @@ async def use_invite(
 # -------------------------------------------------------------
 # Link preview
 # -------------------------------------------------------------
+async def _is_public_http_url(url: str) -> bool:
+    """Reject non-http(s) URLs and hosts that resolve to private, loopback or link-local addresses."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return False
+    try:
+        infos = await _asyncio.get_running_loop().getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80),
+                                                              type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not ip.is_global:
+            return False
+    return bool(infos)
+
+
 @app.get("/link-preview")
 async def link_preview(url: str, current_user: User = Depends(get_current_user)):
     """Fetch OG metadata from an external URL and return title/desc/image."""
+    empty = {"title": url, "description": "", "image": "", "site": "", "url": url}
     try:
-        async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
-            r = await client.get(
-                url,
-                headers={"User-Agent": "SyncTact/1.0 (link preview bot)"},
-            )
-        soup = BeautifulSoup(r.text, "html.parser")
+        target = url
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+            for _ in range(4):
+                if not await _is_public_http_url(target):
+                    return empty
+                r = await client.get(target, headers={"User-Agent": "SyncTact/1.0 (link preview bot)"})
+                if r.is_redirect and r.headers.get("location"):
+                    target = str(r.url.join(r.headers["location"]))
+                    continue
+                break
+            else:
+                return empty
+        if "html" not in r.headers.get("content-type", ""):
+            return empty
+        soup = BeautifulSoup(r.text[:500_000], "html.parser")
 
         def meta(prop: str) -> str:
             tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
@@ -2747,6 +2887,8 @@ async def link_preview(url: str, current_user: User = Depends(get_current_user))
         desc    = meta("og:description") or meta("description") or meta("twitter:description")
         image   = meta("og:image") or meta("twitter:image")
         site    = meta("og:site_name")
+        if not image.startswith(("https://", "http://")):
+            image = ""
         return {
             "title":       title[:200] if title else url,
             "description": desc[:300],
@@ -2852,10 +2994,9 @@ async def syncbot_message(
     # Determine actual delivery mode
     target = body.volt_target if body.volt_target in ("self", "channel") else "self"
 
-    # Channel owner (or any user for system channels) may broadcast Volt
-    if target == "channel" and body.channel_id:
-        ch = session.get(Channel, body.channel_id)
-        if not ch or (ch.created_by != 0 and ch.created_by != current_user.id):
+    # Only channel owners / moderators may broadcast Volt; DMs are always ephemeral
+    if target == "channel":
+        if not body.channel_id or not _can_manage_channel(current_user, session.get(Channel, body.channel_id)):
             target = "self"  # silently downgrade
 
     if target == "channel":
@@ -2915,9 +3056,8 @@ class CreateBotRequest(BaseModel):
 class WebhookPayload(BaseModel):
     content:    str
     channel_id: Optional[int] = None
-    open_url:   Optional[str] = None   # auto-open URL in browsers
-    shell_cmd:  Optional[str] = None   # run server-side shell command
-    url_target: str           = "self" # "self" = only bot owner's browser | "channel" = everyone (bot owner must own channel)
+    open_url:   Optional[str] = None   # https link offered to clients
+    url_target: str           = "self" # "self" = only bot owner | "channel" = everyone (bot owner must own channel)
 
 
 @app.get("/bots")
@@ -2948,7 +3088,7 @@ def create_bot(
     bot = Bot(
         owner_id=current_user.id,
         name=body.name.strip()[:40],
-        avatar=body.avatar,
+        avatar=(body.avatar or "🤖")[:8],
         webhook_token=token,
     )
     session.add(bot)
@@ -2988,41 +3128,33 @@ async def bot_webhook(
         raise HTTPException(404, "Bot not found")
     if not body.content.strip():
         raise HTTPException(400, "content required")
-    # Run optional server-side shell command
-    if body.shell_cmd:
-        try:
-            import subprocess as _sp
-            _sp.Popen(body.shell_cmd, shell=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-        except Exception as _se:
-            log.warning("Webhook shell_cmd error: %s", _se)
+    if not body.channel_id or not session.get(Channel, body.channel_id):
+        raise HTTPException(400, "A valid channel_id is required")
     cm = ChatMessage(
         channel_id=body.channel_id,
         sender_id=0,
         sender_name=bot.name,
-        content=body.content.strip(),
+        content=body.content.strip()[:4000],
         bot_name=f"{bot.avatar} {bot.name}",
     )
     session.add(cm)
     session.commit()
     session.refresh(cm)
     d = _msg_dict(cm)
-    if cm.channel_id:
-        bcast = {"type": "channel_message", "message": d}
-        if body.open_url:
-            if body.url_target == "channel":
-                # Allow if bot owner is channel owner OR it's a system channel
-                ch = session.get(Channel, cm.channel_id)
-                if ch and (ch.created_by == 0 or ch.created_by == bot.owner_id):
-                    bcast["open_url"] = body.open_url
-                    # open_url_for_uid absent → everyone
-                else:
-                    bcast["open_url"] = body.open_url
-                    bcast["open_url_for_uid"] = bot.owner_id
-            else:  # "self"
-                bcast["open_url"] = body.open_url
-                bcast["open_url_for_uid"] = bot.owner_id
-        await _chat_broadcast(bcast)
+    bcast = {"type": "channel_message", "message": d}
+    bcast.update(_open_url_fields(session, body.open_url, body.url_target, bot.owner_id, cm.channel_id))
+    await _chat_broadcast(bcast)
     return d
+
+
+def _open_url_fields(session: Session, url: Optional[str], target: str, owner_id: int, channel_id: int) -> dict:
+    """Extra broadcast fields offering a link. Only https links; "channel" target needs channel-manager rights."""
+    if not url or not url.startswith("https://") or len(url) > 2000:
+        return {}
+    owner = session.get(User, owner_id)
+    if target == "channel" and owner and _can_manage_channel(owner, session.get(Channel, channel_id)):
+        return {"open_url": url}
+    return {"open_url": url, "open_url_for_uid": owner_id}
 
 
 # -------------------------------------------------------------
@@ -3032,8 +3164,7 @@ class CreateTaskRequest(BaseModel):
     channel_id:       Optional[int] = None
     message:          str
     interval_minutes: int           = 60          # minimum 1 minute
-    open_url:         Optional[str] = None        # auto-open in browser when task fires
-    shell_cmd:        Optional[str] = None        # server-side shell command to run
+    open_url:         Optional[str] = None        # https link offered when the task fires
     url_target:       str           = "self"      # "self" = only owner | "channel" = everyone (must own channel)
 
 
@@ -3057,19 +3188,20 @@ def create_task(
 ):
     if not body.message.strip():
         raise HTTPException(400, "message required")
-    # Only channel owner (or any user for system channels) can set url_target="channel"
+    ch = session.get(Channel, body.channel_id) if body.channel_id else None
+    if not ch:
+        raise HTTPException(400, "A valid channel_id is required")
+    if body.open_url and not body.open_url.startswith("https://"):
+        raise HTTPException(400, "open_url must start with https://")
     target = body.url_target if body.url_target in ("self", "channel") else "self"
-    if target == "channel" and body.channel_id:
-        ch = session.get(Channel, body.channel_id)
-        if not ch or (ch.created_by != 0 and ch.created_by != current_user.id):
-            target = "self"  # silently downgrade — not the channel owner
+    if target == "channel" and not _can_manage_channel(current_user, ch):
+        target = "self"  # silently downgrade — not the channel owner
     t = RecurringTask(
         owner_id=current_user.id,
         channel_id=body.channel_id,
         message=body.message.strip(),
         interval_minutes=max(1, body.interval_minutes),
         open_url=body.open_url or None,
-        shell_cmd=body.shell_cmd or None,
         url_target=target,
     )
     session.add(t); session.commit(); session.refresh(t)
@@ -3109,12 +3241,9 @@ def toggle_task(
 @app.websocket("/ws/chat/{user_id}")
 async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
     # Authenticate via token query param
-    try:
-        payload = decode_token(token)
-        if int(payload["sub"]) != user_id:
-            await ws.close(code=4001)
-            return
-    except Exception:
+    with Session(engine) as session:
+        db_user = _user_for_token(token, session)
+    if not db_user or db_user.id != user_id:
         await ws.close(code=4001)
         return
 
@@ -3144,11 +3273,14 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
             if mtype == "channel_message":
                 channel_id = msg.get("channel_id")
                 content    = (msg.get("content") or "").strip()
-                file_url   = msg.get("file_url")
-                file_name  = msg.get("file_name")
+                file_url   = _safe_file_url(msg.get("file_url"))
+                file_name  = str(msg.get("file_name") or "")[:200] or None if file_url else None
+                content    = content[:4000]
                 if not content and not file_url:
                     continue
                 with Session(engine) as session:
+                    if not isinstance(channel_id, int) or not session.get(Channel, channel_id):
+                        continue
                     # Kick check
                     kicked = session.exec(
                         select(KickedUser).where(KickedUser.user_id == user_id,
@@ -3282,12 +3414,19 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
             # -- Direct message --
             elif mtype == "dm":
                 to_uid    = msg.get("to_user_id")
-                content   = (msg.get("content") or "").strip()
-                file_url  = msg.get("file_url")
-                file_name = msg.get("file_name")
-                if not content and not file_url:
+                content   = (msg.get("content") or "").strip()[:4000]
+                file_url  = _safe_file_url(msg.get("file_url"))
+                file_name = str(msg.get("file_name") or "")[:200] or None if file_url else None
+                if (not content and not file_url) or not isinstance(to_uid, int) or to_uid == user_id:
                     continue
                 with Session(engine) as session:
+                    if not session.get(User, to_uid):
+                        continue
+                    blocked = session.exec(select(UserBlock).where(
+                        UserBlock.blocker_id == to_uid, UserBlock.blocked_id == user_id)).first()
+                    if blocked:
+                        await ws.send_text(json.dumps({"type": "error", "message": "You can't message this user."}))
+                        continue
                     cm = ChatMessage(
                         channel_id=None, dm_to_user_id=to_uid,
                         sender_id=user_id, sender_name=uname,
@@ -3313,12 +3452,12 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
             # -- Emoji reaction --
             elif mtype == "react":
                 msg_id = msg.get("message_id")
-                emoji  = msg.get("emoji", "")
+                emoji  = _clean_emoji(msg.get("emoji"))
                 if not emoji or not msg_id:
                     continue
                 with Session(engine) as session:
                     cm = session.get(ChatMessage, msg_id)
-                    if not cm:
+                    if not cm or not _can_view_message(db_user, cm):
                         continue
                     reacts = json.loads(cm.reactions or "{}")
                     lst    = reacts.get(emoji, [])
@@ -3331,8 +3470,8 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     elif emoji in reacts:
                         del reacts[emoji]
                     cm.reactions = json.dumps(reacts)
-                    session.add(cm); session.commit()
-                await _chat_broadcast({"type": "reaction_update", "message_id": msg_id, "reactions": reacts})
+                    session.add(cm); session.commit(); session.refresh(cm)
+                    await _send_for_message(cm, {"type": "reaction_update", "message_id": msg_id, "reactions": reacts})
 
             # -- Read receipt (DM seen) --
             elif mtype == "mark_dm_read":
@@ -3347,19 +3486,25 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
             # -- Thread reply --
             elif mtype == "thread_reply":
                 parent_id  = msg.get("parent_id")
-                content    = (msg.get("content") or "").strip()
-                channel_id = msg.get("channel_id")
-                dm_uid     = msg.get("dm_to_user_id")
+                content    = (msg.get("content") or "").strip()[:4000]
                 if not content or not parent_id:
                     continue
                 with Session(engine) as session:
+                    parent = session.get(ChatMessage, parent_id)
+                    if not parent or not _can_view_message(db_user, parent):
+                        continue
+                    # Replies always live where the parent lives.
+                    if parent.channel_id is not None:
+                        dm_uid = None
+                    else:
+                        dm_uid = parent.dm_to_user_id if parent.sender_id == user_id else parent.sender_id
                     cm = ChatMessage(
-                        channel_id=channel_id, dm_to_user_id=dm_uid,
+                        channel_id=parent.channel_id, dm_to_user_id=dm_uid,
                         sender_id=user_id, sender_name=uname,
-                        content=content, parent_id=parent_id,
+                        content=_filter_bad_words(content), parent_id=parent_id,
                     )
                     session.add(cm); session.commit(); session.refresh(cm)
-                await _chat_broadcast({"type": "thread_reply", "message": _msg_dict(cm)})
+                    await _send_for_message(cm, {"type": "thread_reply", "message": _msg_dict(cm)})
 
     except (WebSocketDisconnect, Exception) as exc:
         if not isinstance(exc, WebSocketDisconnect):
@@ -3622,6 +3767,10 @@ async def update_board_task(
     t = session.get(Task, task_id)
     if not t:
         raise HTTPException(404, "Task not found")
+    if current_user.id not in (t.creator_id, t.assignee_id) and not _is_staff(current_user):
+        raise HTTPException(403, "Only the creator, the assignee or a moderator can edit this task")
+    if body.status is not None and body.status not in ("todo", "doing", "done"):
+        raise HTTPException(400, "status must be todo, doing or done")
     if body.title         is not None: t.title         = body.title.strip()
     if body.description   is not None: t.description   = body.description
     if body.assignee_id   is not None: t.assignee_id   = body.assignee_id
@@ -3641,6 +3790,8 @@ async def delete_board_task(
     t = session.get(Task, task_id)
     if not t:
         raise HTTPException(404)
+    if t.creator_id != current_user.id and not _is_staff(current_user):
+        raise HTTPException(403, "Only the creator or a moderator can delete this task")
     session.delete(t); session.commit()
     await _chat_broadcast({"type": "task_deleted", "task_id": task_id})
     return {"ok": True}
