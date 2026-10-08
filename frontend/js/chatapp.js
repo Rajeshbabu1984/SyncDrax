@@ -275,11 +275,23 @@ async function initChat() {
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
+let _wsRetryDelay = 1000;
 function connectWS() {
-  ws = new WebSocket(`${WSS}/ws/chat/${user.id}?token=${token}`);
+  ws = new WebSocket(`${WSS}/ws/chat/${user.id}?token=${encodeURIComponent(token)}`);
 
-  ws.onopen  = () => console.log('[chat-ws] connected');
-  ws.onclose = () => { console.log('[chat-ws] disconnected'); setTimeout(connectWS, 3000); };
+  ws.onopen  = () => {
+    console.log('[chat-ws] connected');
+    // Re-fetch the open conversation after a reconnect so messages missed while offline appear
+    if (_wsRetryDelay > 1000 && activeType && activeId) loadMessages(activeType, activeId);
+    _wsRetryDelay = 1000;
+  };
+  ws.onclose = e => {
+    console.log('[chat-ws] disconnected', e.code);
+    if (e.code === 4001) { signOutLocal(); return; }
+    if (e.code === 4003) { setTimeout(signOutLocal, 2000); return; }
+    setTimeout(connectWS, _wsRetryDelay);
+    _wsRetryDelay = Math.min(_wsRetryDelay * 2, 30000);
+  };
   ws.onerror = e => console.error('[chat-ws] error', e);
   ws.onmessage = e => {
     console.log('[chat-ws] received:', e.data);
@@ -309,12 +321,13 @@ function handleServerMsg(msg) {
         unread[m.channel_id] = (unread[m.channel_id] || 0) + 1;
         updateUnreadBadge(m.channel_id);
       }
-      // Auto-open URL if Volt recurring task / webhook includes one
-      if (msg.open_url && m.bot_name) {
-        // open_url_for_uid absent → everyone; present → only that user
+      // Volt recurring task / webhook link: auto-open only for the bot owner; everyone else gets a clickable prompt
+      if (msg.open_url && m.bot_name && /^https:\/\//i.test(msg.open_url)) {
         const forUid = msg.open_url_for_uid;
-        if (forUid === undefined || forUid === null || forUid === user.id) {
+        if (forUid === user.id) {
           window.open(msg.open_url, '_blank', 'noopener,noreferrer');
+        } else if (forUid === undefined || forUid === null) {
+          offerLink(msg.open_url, m.bot_name);
         }
       }
       // Desktop notification for Volt automated messages
@@ -838,9 +851,9 @@ function appendMessage(m, initial) {
   if (m.forwarded_from) inner += `<span class="forwarded-label"><i class="fa-solid fa-share"></i> Forwarded</span>`;
   if (m.content) inner += `<span class="msg-text">${renderMentions(typeof renderMarkdown === 'function' ? renderMarkdown(m.content) : esc(m.content))}</span>`;
   if (m.edited)  inner += `<span class="edited-label">(edited)</span>`;
-  if (m.file_url) {
-    const fullUrl   = API + m.file_url;
-    const isImage   = /\.(png|jpg|jpeg|gif|webp|svg|bmp|avif)$/i.test(m.file_url);
+  if (m.file_url && fileHref(m.file_url)) {
+    const fullUrl   = fileHref(m.file_url);
+    const isImage   = /\.(png|jpg|jpeg|gif|webp|svg|bmp|avif)$/i.test(m.file_url) || /^https:\/\/[^/]*(giphy|tenor)/i.test(m.file_url);
     const isVideo   = /\.(mp4|webm|mov)$/i.test(m.file_url);
     const isAudio   = /\.(mp3|ogg|wav|m4a|webm)$/i.test(m.file_url) && !isVideo;
     const isVoiceMsg = /voice-\d+\.webm$/i.test(m.file_url);
@@ -873,7 +886,7 @@ function appendMessage(m, initial) {
     ${isSender && !m.bot_name ? `<button class="react-btn" onclick="startEditMessage(${m.id})" title="Edit">✏️</button>` : ''}
     ${canDelete ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
     ${(activeChannel && activeChannel.created_by === user.id && !isSender && !m.bot_name) ? `<button class="mod-btn" onclick="kickUser(${m.sender_id},${m.channel_id})" title="Kick from channel">🥢</button><button class="mod-btn" onclick="muteUser(${m.sender_id},${m.channel_id})" title="Mute in channel">🔇</button>` : ''}
-    ${(!isSender && !m.bot_name) ? `<button class="react-btn ctx-block" onclick="blockUser(${m.sender_id},'${(m.sender_name||'').replace(/'/g,'\\\'')}')" title="Block user"><i class="fa-solid fa-ban"></i></button>` : ''}
+    ${(!isSender && !m.bot_name) ? `<button class="react-btn ctx-block" data-uid="${Number(m.sender_id)}" data-name="${esc(m.sender_name||'')}" onclick="blockUser(Number(this.dataset.uid), this.dataset.name)" title="Block user"><i class="fa-solid fa-ban"></i></button>` : ''}
   </span>`;
   }
   inner += `<div class="reactions-row"></div>`;
@@ -894,7 +907,7 @@ function buildReactionRow(rowEl, msgId, reactions) {
     const mine = users.includes(user.id);
     const pill = document.createElement('button');
     pill.className = `reaction-pill${mine ? ' mine' : ''}`;
-    pill.innerHTML = `${emoji} <span class="reaction-count">${users.length}</span>`;
+    pill.innerHTML = `${esc(emoji)} <span class="reaction-count">${users.length}</span>`;
     pill.onclick   = () => wsSend({ type: 'react', message_id: msgId, emoji });
     rowEl.appendChild(pill);
   });
@@ -1544,7 +1557,15 @@ async function authFetch(path, methodOrOpts = 'GET', body = null) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
   };
   if (rawBody) opts.body = rawBody;
-  return fetch(API + path, opts);
+  const res = await fetch(API + path, opts);
+  if (res.status === 401) signOutLocal();
+  return res;
+}
+
+function signOutLocal() {
+  localStorage.removeItem('synctact_token');
+  localStorage.removeItem('synctact_user');
+  location.href = 'index.html';
 }
 
 function scrollToBottom() {
@@ -1561,7 +1582,33 @@ function formatTime(ts) {
 }
 
 function esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function offerLink(url, from) {
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;bottom:80px;right:20px;z-index:9999;background:var(--bg-2,#222);color:var(--text,#eee);' +
+    'border:1px solid var(--border,#444);border-radius:10px;padding:10px 14px;max-width:360px;font-size:.85rem;box-shadow:0 4px 16px rgba(0,0,0,.4);';
+  const label = document.createElement('div');
+  label.textContent = `${from} shared a link:`;
+  const a = document.createElement('a');
+  a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+  a.textContent = url; a.style.cssText = 'word-break:break-all;color:var(--purple-l,#a78bfa);';
+  a.onclick = () => box.remove();
+  const close = document.createElement('button');
+  close.textContent = '✕'; close.style.cssText = 'float:right;background:none;border:none;color:inherit;cursor:pointer;';
+  close.onclick = () => box.remove();
+  box.append(close, label, a);
+  document.body.appendChild(box);
+  setTimeout(() => box.remove(), 30000);
+}
+
+// Attachment URL safe for src/href: our own /uploads paths or https URLs only, HTML-escaped.
+function fileHref(url) {
+  url = String(url || '');
+  if (url.startsWith('/')) return esc(API + url);
+  if (url.startsWith('https://')) return esc(url);
+  return '';
 }
 
 // Render @mentions as highlighted spans
@@ -2016,7 +2063,7 @@ function formatTime(ts) {
 }
 
 function esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function showToast(msg, type = '') {
@@ -2160,7 +2207,8 @@ async function openGalleryPanel() {
   if (!items.length) { body.innerHTML = '<div class="gallery-empty">No media in this channel yet.</div>'; return; }
   body.innerHTML = '';
   items.forEach(item => {
-    const fullUrl = API + item.file_url;
+    const fullUrl = fileHref(item.file_url);
+    if (!fullUrl) return;
     const el = document.createElement('div');
     el.className = 'gallery-item';
     el.title = `${item.sender} • ${item.file_name}`;
@@ -2169,7 +2217,8 @@ async function openGalleryPanel() {
     } else {
       el.innerHTML = `<img src="${fullUrl}" alt="${esc(item.file_name || '')}" loading="lazy" />`;
     }
-    el.addEventListener('click', () => window.open(fullUrl, '_blank'));
+    const rawUrl = item.file_url.startsWith('/') ? API + item.file_url : item.file_url;
+    el.addEventListener('click', () => window.open(rawUrl, '_blank', 'noopener'));
     body.appendChild(el);
   });
 }
@@ -2289,7 +2338,7 @@ async function togglePin(msgId) {
 async function loadPinnedMessages(channelId) {
   const res = await authFetch(`/chat/channels/${channelId}/pinned`);
   if (!res.ok) {
-    if (res.status === 401) { clearInterval(_pinnedPollTimer); localStorage.removeItem('token'); location.href = '/index.html'; }
+    if (res.status === 401) { clearInterval(_pinnedPollTimer); signOutLocal(); }
     return;
   }
   const msgs = await res.json();
@@ -2825,7 +2874,6 @@ function renderTasks() {
         <div style="font-size:.85rem;color:var(--text-primary);word-break:break-word;margin-bottom:3px;">${esc(t.message)}</div>
         <div style="font-size:.75rem;color:var(--text-muted);">${esc(chName)} &middot; ${interval} &middot; last: ${lastRun}</div>
         ${t.open_url ? `<div style="font-size:.72rem;color:#7ab4f5;margin-top:2px;">&#128279; ${esc(t.open_url)} <span style="color:var(--text-muted);">(for: ${t.url_target === 'channel' ? 'everyone in channel' : 'just me'})</span></div>` : ''}
-        ${t.shell_cmd ? `<div style="font-size:.72rem;color:#f5c97a;margin-top:2px;">&#9881; ${esc(t.shell_cmd)}</div>` : ''}
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;">
         <button class="modal-btn ${t.active ? 'primary' : 'secondary'}" style="padding:5px 10px;font-size:.78rem;"
@@ -2842,7 +2890,6 @@ window.createTask = async function() {
   const interval = parseInt(document.getElementById('taskIntervalInput').value) || 1;
   const unit     = parseInt(document.getElementById('taskIntervalUnit').value);
   const openUrl  = document.getElementById('taskUrlInput')?.value.trim() || null;
-  const shellCmd = document.getElementById('taskShellInput')?.value.trim() || null;
   const urlTarget = document.getElementById('taskUrlTarget')?.value || 'self';
   if (!msg) { showToast('Enter a message'); return; }
   if (!chanId) { showToast('Select a channel'); return; }
@@ -2851,7 +2898,6 @@ window.createTask = async function() {
     channel_id: chanId,
     interval_minutes: interval * unit,
     ...(openUrl  ? { open_url:  openUrl  } : {}),
-    ...(shellCmd ? { shell_cmd: shellCmd } : {}),
     url_target: urlTarget,
   });
   if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.detail || 'Failed to create task'); return; }
@@ -2862,7 +2908,6 @@ window.createTask = async function() {
   document.getElementById('taskIntervalInput').value = '60';
   document.getElementById('taskIntervalUnit').value = '60';
   if (document.getElementById('taskUrlInput'))   document.getElementById('taskUrlInput').value = '';
-  if (document.getElementById('taskShellInput')) document.getElementById('taskShellInput').value = '';
   showToast('✅ Recurring task created!');
 };
 
@@ -3204,9 +3249,10 @@ async function confirm2FA() {
 }
 
 async function disable2FA() {
-  if (!confirm('Disable two-factor authentication?')) return;
-  const res = await authFetch('/auth/2fa', 'DELETE');
-  if (!res.ok) { showToast('Could not disable 2FA'); return; }
+  const code = (prompt('Enter the 6-digit code from your authenticator app to disable 2FA:') || '').trim();
+  if (!code) return;
+  const res = await authFetch(`/auth/2fa?code=${encodeURIComponent(code)}`, 'DELETE');
+  if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.detail || 'Could not disable 2FA'); return; }
   showToast('2FA disabled');
   load2FAStatus();
 }
@@ -3593,16 +3639,18 @@ function applyMoodBoardMode(isMoodboard) {
 function renderMoodBoardMessage(msg) {
   // Returns an img card if content looks like an image URL
   const imgExtRe = /\.(jpg|jpeg|png|gif|webp|avif|svg)(\?.*)?$/i;
-  const urlRe = /^https?:\/\//i;
+  const urlRe = /^https:\/\/\S+$/i;
   const src = (msg.file_url && imgExtRe.test(msg.file_url))
-    ? msg.file_url
-    : (urlRe.test(msg.content) && (imgExtRe.test(msg.content) || msg.content.includes('images.')))
+    ? (msg.file_url.startsWith('/') ? API + msg.file_url : msg.file_url)
+    : (msg.content && urlRe.test(msg.content) && (imgExtRe.test(msg.content) || msg.content.includes('images.')))
       ? msg.content : null;
-  if (!src) return null;
+  if (!src || !(src.startsWith('https://') || src.startsWith(API + '/'))) return null;
   const card = document.createElement('div');
   card.className = 'mood-img-card';
-  card.innerHTML = `<img src="${src}" alt="" loading="lazy" />`;
-  card.addEventListener('click', () => window.open(src, '_blank'));
+  const img = document.createElement('img');
+  img.src = src; img.alt = ''; img.loading = 'lazy';
+  card.appendChild(img);
+  card.addEventListener('click', () => window.open(src, '_blank', 'noopener'));
   return card;
 }
 
@@ -3697,7 +3745,10 @@ async function fetchGifs(query) {
       img.title = item.content_description || '';
       img.addEventListener('click', () => {
         document.getElementById('gifOverlay').classList.add('hidden');
-        wsSend({ type: 'channel_message', channel_id: activeId, content: '', file_url: url, file_name: 'gif' });
+        const payload = { content: '', file_url: url, file_name: 'gif' };
+        if (activeType === 'channel') { payload.type = 'channel_message'; payload.channel_id = activeId; }
+        else                          { payload.type = 'dm'; payload.to_user_id = activeId; }
+        wsSend(payload);
       });
       grid.appendChild(img);
     });
@@ -3741,7 +3792,7 @@ async function loadFileBrowser() {
     return 'fa-file';
   };
   list.innerHTML = files.map(f => `
-    <a class="fb-item" href="${API+f.file_url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
+    <a class="fb-item" href="${fileHref(f.file_url)}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
       <i class="fa-solid ${extIcon(f.file_name)} fb-icon"></i>
       <span class="fb-name" title="${esc(f.file_name||'')}"> ${esc(f.file_name||'file')}</span>
       <span class="fb-date">${new Date(f.ts).toLocaleDateString()}</span>
@@ -3939,10 +3990,6 @@ async function loadDiscovery(containerEl) {
 function initNewFeatureHandlers2() {
   // Call buttons
   document.getElementById('startCallBtn')?.addEventListener('click', startCall);
-  document.getElementById('callJoinBtn')?.addEventListener('click', () => {
-    const room = `ch${activeId}`;
-    window.open(`/meeting.html?room=${room}&name=${encodeURIComponent(user.name)}`, '_blank');
-  });
   document.getElementById('callEndBtn')?.addEventListener('click', endCall);
 
   // File browser

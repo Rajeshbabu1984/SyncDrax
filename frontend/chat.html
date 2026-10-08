@@ -1162,14 +1162,12 @@
     "content":    "Build passed ✅",
     "channel_id": 1,
     "open_url":   "https://youtube.com",
-    "shell_cmd":  "start notepad.exe",
     "url_target": "self"
   }'</pre>
       <p style="font-size:.78rem;color:var(--text-muted);margin-top:5px;">
         <b>url_target</b>: <code>"self"</code> = URL opens only in the bot owner's browser &nbsp;|
-        <code>"channel"</code> = opens for everyone (bot owner must be the channel owner)<br/>
-        <b>open_url</b> — opens a URL in browser &nbsp;|
-        <b>shell_cmd</b> — server-side command (e.g. <code>start calc.exe</code>)
+        <code>"channel"</code> = offered to everyone as a clickable link (bot owner must be the channel owner)<br/>
+        <b>open_url</b> — an https:// link to open
       </p>
     </div>
 
@@ -1184,15 +1182,12 @@
         <textarea id="taskMsgInput" class="modal-input" placeholder="Message Volt will post automatically…" rows="2"
           style="resize:vertical;font-family:inherit;padding:8px;"></textarea>
         <input id="taskUrlInput" class="modal-input" type="url"
-          placeholder="🔗 URL to auto-open in browser (optional)"
+          placeholder="🔗 https:// link to share when the task runs (optional)"
           style="padding:8px;" />
         <select id="taskUrlTarget" class="modal-input" style="padding:8px;">
-          <option value="self" selected>🔒 Open URL for: Just me (private)</option>
-          <option value="channel">📢 Open URL for: Everyone in channel (channel owners only)</option>
+          <option value="self" selected>🔒 Link for: Just me (opens automatically)</option>
+          <option value="channel">📢 Link for: Everyone in channel (channel owners only, shown as a prompt)</option>
         </select>
-        <input id="taskShellInput" class="modal-input" type="text"
-          placeholder="⚙️ Server command (e.g. start https://youtube.com or start notepad.exe)"
-          style="padding:8px;" />
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;min-width:170px;">
         <select id="taskChannelSelect" class="modal-input" style="padding:8px;"></select>

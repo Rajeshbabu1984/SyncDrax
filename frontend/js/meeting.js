@@ -7,7 +7,7 @@
   const params    = new URLSearchParams(location.search);
   const ROOM_CODE = (params.get('room') || '').toUpperCase();
   const IS_HOST   = params.get('host') === 'true';
-  const BACK_URL  = params.get('back') || 'index.html';
+  const BACK_URL  = ['chat.html', 'index.html'].includes(params.get('back')) ? params.get('back') : 'index.html';
 
   if (!ROOM_CODE) { location.href = BACK_URL; return; }
 

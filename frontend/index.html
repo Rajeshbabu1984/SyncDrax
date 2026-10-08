@@ -219,7 +219,12 @@
       if (token) localStorage.setItem('synctact_token', token);
       localStorage.setItem('synctact_auth_v', '3'); // always stamp version on save
     }
+    function esc(str) {
+      return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
     function signOut()  {
+      const tok = localStorage.getItem('synctact_token');
+      if (tok) fetch(`${API}/auth/signout`, { method: 'POST', headers: { 'Authorization': 'Bearer ' + tok } }).catch(() => {});
       localStorage.removeItem('synctact_user');
       localStorage.removeItem('synctact_token');
       updateNav();
@@ -233,7 +238,7 @@
       const adminLink  = document.getElementById('adminFooterLink');
 
       // Show admin panel link only to admin/mod (use cached role first, then refresh from server)
-      if (adminLink) adminLink.style.display = (user && (user.role === 'admin' || user.role === 'mod')) ? '' : 'none';
+      if (adminLink) adminLink.style.display = (user && (user.role === 'admin' || user.role === 'moderator')) ? '' : 'none';
 
       // Fetch fresh role from server and update both localStorage and the link
       if (user) {
@@ -246,7 +251,7 @@
             user.role = me.role;
             localStorage.setItem('synctact_user', JSON.stringify(user));
           }
-          if (adminLink) adminLink.style.display = (me.role === 'admin' || me.role === 'mod') ? '' : 'none';
+          if (adminLink) adminLink.style.display = (me.role === 'admin' || me.role === 'moderator') ? '' : 'none';
         }).catch(() => {});
       }
 
@@ -261,7 +266,7 @@
         pill.id = 'navUserPill';
         pill.style.cssText = 'display:flex;align-items:center;gap:10px;';
         pill.innerHTML = `
-          <span style="font-size:0.85rem;color:var(--text-muted)">Signed in as <strong style="color:var(--text-bright)">${user.name}</strong></span>
+          <span style="font-size:0.85rem;color:var(--text-muted)">Signed in as <strong style="color:var(--text-bright)">${esc(user.name)}</strong></span>
           <button class="btn btn-ghost" onclick="signOut()" style="padding:6px 14px;font-size:0.82rem">Sign Out</button>
         `;
         navLinks.appendChild(pill);
@@ -328,11 +333,18 @@
       const btn = document.getElementById('doSignInBtn');
       btn.disabled = true; btn.textContent = 'Signing in�';
       try {
-        const res  = await fetch(`${API}/auth/signin`, {
+        const signin = totp_code => fetch(`${API}/auth/signin`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ email, password: pass })
+          body: JSON.stringify({ email, password: pass, totp_code })
         });
-        const data = await res.json();
+        let res  = await signin();
+        let data = await res.json();
+        if (res.status === 401 && data.detail === '2fa_required') {
+          const code = (prompt('Enter the 6-digit code from your authenticator app:') || '').trim();
+          if (!code) throw new Error('Two-factor code required');
+          res  = await signin(code);
+          data = await res.json();
+        }
         if (!res.ok) throw new Error(data.detail || 'Sign in failed');
         saveUser(data.user, data.token);
         window.location.href = 'chat.html';
@@ -438,9 +450,9 @@
           <a href="chat.html" style="background:#19171d;border:1px solid #2f3133;border-radius:12px;padding:18px;text-decoration:none;color:#d1d2d3;transition:border-color .2s,transform .2s;display:block;"
              onmouseover="this.style.borderColor='#7c3aed';this.style.transform='translateY(-2px)';"
              onmouseout="this.style.borderColor='#2f3133';this.style.transform='';">
-            <div style="font-size:1rem;font-weight:800;margin-bottom:6px;"># ${ch.name}</div>
-            ${ch.description ? `<div style="font-size:.78rem;color:#828689;margin-bottom:8px;">${ch.description}</div>` : ''}
-            <div style="font-size:.7rem;color:#7c3aed;">${ch.message_count} messages</div>
+            <div style="font-size:1rem;font-weight:800;margin-bottom:6px;"># ${esc(ch.name)}</div>
+            ${ch.description ? `<div style="font-size:.78rem;color:#828689;margin-bottom:8px;">${esc(ch.description)}</div>` : ''}
+            <div style="font-size:.7rem;color:#7c3aed;">${Number(ch.message_count) || 0} messages</div>
           </a>`).join('');
       } catch(e) {
         grid.innerHTML = '<p style="color:#828689;text-align:center;grid-column:1/-1;">Could not load channels</p>';

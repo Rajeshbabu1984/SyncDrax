@@ -1,4 +1,5 @@
-const CACHE = 'synctact-v1';
+// Bump the version whenever caching rules change so old caches are deleted on activate.
+const CACHE = 'synctact-v2';
 const PRECACHE = [
   '/',
   '/index.html',
@@ -24,13 +25,15 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Network-first for API calls, cache-first for static assets
+  // Network-first for this site's static files only. API calls go to another origin
+  // (or carry auth headers) and must never be cached.
   const url = new URL(e.request.url);
-  if (url.port === '8000' || url.pathname.startsWith('/ws')) return;
+  if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith('/ws') || e.request.headers.has('Authorization')) return;
   e.respondWith(
     fetch(e.request)
       .then(r => {
-        if (r && r.status === 200 && e.request.method === 'GET') {
+        if (r && r.status === 200 && r.type === 'basic') {
           const clone = r.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
