@@ -15,3 +15,10 @@ const API_BASE = _IS_LOCAL
 const WS_BASE = _IS_LOCAL
   ? 'ws://localhost:8000'
   : 'wss://synctact-backend.onrender.com';
+
+/**
+ * Extra ICE servers appended to the public STUN list in webrtc.js.
+ * Calls between peers behind symmetric NAT / strict firewalls need a TURN
+ * relay, e.g. { urls: 'turn:turn.example.com:3478', username: '...', credential: '...' }
+ */
+const EXTRA_ICE_SERVERS = [];

@@ -120,6 +120,8 @@
   let _recordedChunks     = [];
   let _recSeconds         = 0;
   let _recInterval        = null;
+  let _vadInterval        = null;
+  let _vadAudioCtx        = null;
   let allParticipantNames = new Set();
   let meetingChatCount    = 0;
   let wbTool              = 'pen';
@@ -363,10 +365,10 @@
         removePeerFromSidebar(peerId);
       },
 
-      onPeerStream(peerId, stream) {
+      onPeerStream(peerId, stream, name) {
         const tile = peerTileMap.get(peerId);
         if (!tile) {
-          createRemoteTile(peerId, stream, '');
+          createRemoteTile(peerId, stream, name || '');
         } else {
           const vid = tile.querySelector('video');
           if (vid) { vid.srcObject = stream; vid.play().catch(() => {}); }
@@ -721,8 +723,20 @@
     if (sumNames)         sumNames.textContent         = [...allParticipantNames].join(', ') || displayName;
     summaryOverlay.classList.remove('hidden');
     clearInterval(timerInterval);
+  }
+
+  let _tornDown = false;
+  function teardownMeeting() {
+    if (_tornDown) return;
+    _tornDown = true;
+    if (isRecording) stopRecording();
+    clearInterval(timerInterval);
+    if (_vadInterval) { clearInterval(_vadInterval); _vadInterval = null; }
+    if (_vadAudioCtx) { _vadAudioCtx.close().catch(() => {}); _vadAudioCtx = null; }
+    if (_noiseAudioCtx) { _noiseAudioCtx.close().catch(() => {}); _noiseAudioCtx = null; }
     rtc && rtc.disconnect();
   }
+  window.addEventListener('pagehide', teardownMeeting);
 
   sumStayBtn.addEventListener('click', () => {
     summaryOverlay.classList.add('hidden');
@@ -735,6 +749,7 @@
     }, 1000);
   });
   sumLeaveBtn.addEventListener('click', () => {
+    teardownMeeting();
     // Close tab if opened by script (from chat hub), otherwise navigate back
     try { window.close(); } catch(e) {}
     // Fallback in case window.close() is blocked
@@ -816,9 +831,9 @@
 
   /* -------------------- SPEAKING DETECTION (VAD) -------------------- */
   (function setupVAD() {
-    if (!localStream) return;
+    if (!localStream || !localStream.getAudioTracks().length) return;
     try {
-      const audioCtx = new AudioContext();
+      const audioCtx = _vadAudioCtx = new AudioContext();
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       const source = audioCtx.createMediaStreamSource(localStream);
@@ -826,7 +841,7 @@
       const data = new Uint8Array(analyser.fftSize);
       const localTile = document.getElementById('localTile');
 
-      setInterval(() => {
+      _vadInterval = setInterval(() => {
         analyser.getByteFrequencyData(data);
         const avg = data.reduce((a, b) => a + b, 0) / data.length;
         if (avg > 20 && micEnabled) {
@@ -938,8 +953,9 @@
   function startRecording() {
     try {
       const tracks = [];
-      // Prefer canvas track if bg active, else video track
-      const videoTrack = (localCanvas && localCanvas.captureStream)
+      // The canvas is only painted while a virtual background is active
+      const bgActive = bgEngineLocal && bgEngineLocal.current && bgEngineLocal.current !== 'none';
+      const videoTrack = (bgActive && localCanvas && localCanvas.captureStream)
         ? localCanvas.captureStream(30).getVideoTracks()[0]
         : (localStream && localStream.getVideoTracks()[0]);
       if (videoTrack) tracks.push(videoTrack);
@@ -949,16 +965,19 @@
 
       const recStream = new MediaStream(tracks);
       _recordedChunks = [];
-      _mediaRecorder = new MediaRecorder(recStream, { mimeType: 'video/webm;codecs=vp9' });
+      const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4']
+        .find(t => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+      _mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
       _mediaRecorder.ondataavailable = (e) => { if (e.data.size) _recordedChunks.push(e.data); };
       _mediaRecorder.onstop = () => {
-        const blob = new Blob(_recordedChunks, { type: 'video/webm' });
+        const type = _mediaRecorder.mimeType || mimeType || 'video/webm';
+        const blob = new Blob(_recordedChunks, { type });
         const url  = URL.createObjectURL(blob);
         const a    = document.createElement('a');
         a.href     = url;
-        a.download = `SyncTact-recording-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.webm`;
+        a.download = `SyncTact-recording-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.${type.includes('mp4') ? 'mp4' : 'webm'}`;
         a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
         showToast('Recording saved!');
       };
       _mediaRecorder.start(100);
