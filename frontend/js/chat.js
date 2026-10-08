@@ -1,8 +1,8 @@
 ﻿/* =======================================================
-   SyncTact ï¿½ In-Call Chat Controller
+   SyncTact — In-Call Chat Controller
    ======================================================= */
 
-const CHAT_EMOJIS = ['ðŸ‘','â¤ï¸','ðŸ˜‚','ðŸŽ‰','ðŸ˜®','ðŸ‘','ðŸ”¥','ðŸ’¯'];
+const CHAT_EMOJIS = ['👍','❤️','😂','🎉','😮','👏','🔥','💯'];
 
 class ChatController {
   constructor({ messagesEl, inputEl, sendBtn, emojiBtn, emojiPicker, badgeEl, onSend }) {
@@ -161,7 +161,7 @@ class ChatController {
     const reactBtn = document.createElement('button');
     reactBtn.className = 'chat-msg-action-btn';
     reactBtn.title     = 'React';
-    reactBtn.innerHTML = 'ðŸ˜Š';
+    reactBtn.innerHTML = '😊';
     reactBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this._toggleEmojiPicker(wrap, reactRow);
