@@ -1651,7 +1651,7 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
 
     # -- Enforce participant limit --
     room_peers = rooms.get(room_code, {})
-    if len(room_peers) >= MAX_PEERS_PER_ROOM:
+    if peer_id not in room_peers and len(room_peers) >= MAX_PEERS_PER_ROOM:
         await safe_send(ws, {"type": "room_full"})
         await ws.close()
         return
@@ -1717,15 +1717,15 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
 
     finally:
         # -- Clean up --
-        if room_code in rooms and peer_id in rooms[room_code]:
+        # A reconnect under the same peer_id replaces our entry; leave it alone in that case.
+        current = rooms.get(room_code, {}).get(peer_id)
+        if current is not None and current["ws"] is ws:
             del rooms[room_code][peer_id]
             log.info("[%s] %s left  (total: %d)", room_code, peer_id, len(rooms.get(room_code, {})))
-
-        # Notify others
-        await broadcast_to_room(room_code, {
-            "type":    "peer_left",
-            "peer_id": peer_id,
-        })
+            await broadcast_to_room(room_code, {
+                "type":    "peer_left",
+                "peer_id": peer_id,
+            })
 
         # Remove empty rooms
         if room_code in rooms and not rooms[room_code]:
