@@ -15,17 +15,13 @@ services:
         generateValue: true
       - key: ADMIN_KEY
         sync: false   # set this manually in Render dashboard
-      # Email for sign-up codes. Set ONE of BREVO_API_KEY or RESEND_API_KEY, plus FROM_EMAIL
-      # (Brevo: a sender address you verified in Brevo; Resend: an address on a domain you verified).
+      # Optional, only for the daily digest email. Set ONE of BREVO_API_KEY or RESEND_API_KEY, plus FROM_EMAIL.
       # Free Render instances block SMTP ports, so SMTP_* settings only work on paid plans.
       - key: BREVO_API_KEY
         sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: FROM_EMAIL
-        sync: false
-      # Set to "off" to allow sign-up without email verification (not recommended).
-      - key: EMAIL_VERIFICATION
         sync: false
 
   - type: web

@@ -67,14 +67,12 @@ ALGORITHM        = "HS256"
 TOKEN_EXPIRE_DAYS = 30
 # Without ADMIN_KEY the admin-key endpoints are disabled.
 ADMIN_KEY         = os.getenv("ADMIN_KEY", "")
-# Only for local development: return signup verification codes in the API response when SMTP is not configured.
-EMAIL_DEV_MODE    = os.getenv("EMAIL_DEV_MODE", "").lower() in ("1", "true", "yes")
 MAX_UPLOAD_BYTES  = 25 * 1024 * 1024
 GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_URL        = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
-# Email delivery. The first configured provider is used: Resend, Brevo, then SMTP.
+# Email delivery (daily digest). The first configured provider is used: Resend, Brevo, then SMTP.
 # Render's free instances block outbound SMTP ports, so use an HTTPS API provider there.
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 BREVO_API_KEY  = os.getenv("BREVO_API_KEY", "")
@@ -84,15 +82,11 @@ SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
 FROM_EMAIL     = os.getenv("FROM_EMAIL") or SMTP_USER or ("onboarding@resend.dev" if RESEND_API_KEY else "")
 FROM_NAME      = os.getenv("FROM_NAME", "SyncTact")
-# "off" lets people sign up without confirming their email address (anyone can claim any address).
-EMAIL_VERIFICATION = os.getenv("EMAIL_VERIFICATION", "required").strip().lower()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synctact.db")
 UPLOADS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-# In-memory verification codes storage: {email: {"code": "123456", "expires": timestamp, "name": "...", "password": "..."}}
-verification_codes: Dict[str, dict] = {}
 
 # -------------------------------------------------------------
 # Logging
@@ -530,26 +524,6 @@ def send_email(to_email: str, subject: str, text_body: str, html_body: Optional[
     return False
 
 
-def send_verification_email(to_email: str, code: str) -> bool:
-    """Send a 6-digit verification code via email. Returns True on success, False on failure."""
-    text_body = f"Your verification code is: {code}\n\nThis code will expire in 10 minutes."
-    html_body = f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; padding: 20px;">
-        <div style="max-width: 500px; margin: 0 auto; background: #f9fafb; padding: 30px; border-radius: 8px;">
-          <h2 style="color: #1f2937; margin-bottom: 20px;">Welcome to SyncTact!</h2>
-          <p style="color: #4b5563; font-size: 16px;">Your verification code is:</p>
-          <div style="background: #fff; padding: 20px; border-radius: 6px; text-align: center; margin: 20px 0;">
-            <span style="font-size: 32px; font-weight: bold; color: #5865f2; letter-spacing: 8px;">{code}</span>
-          </div>
-          <p style="color: #6b7280; font-size: 14px;">This code will expire in 10 minutes.</p>
-          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px;">If you didn't request this code, please ignore this email.</p>
-        </div>
-      </body>
-    </html>
-    """
-    return send_email(to_email, "Your SyncTact Verification Code", text_body, html_body)
-
 
 # -------------------------------------------------------------
 # JWT
@@ -670,15 +644,10 @@ class SignInRequest(BaseModel):
     totp_code: Optional[str] = None
 
 
-class RequestVerificationRequest(BaseModel):
+class SignUpRequest(BaseModel):
     name:     str
-    email:    str
+    email:    EmailStr
     password: str
-
-
-class VerifyAndSignUpRequest(BaseModel):
-    email: str
-    code:  str
 
 
 class AuthResponse(BaseModel):
@@ -753,12 +722,8 @@ def on_startup():
         log.warning("SECRET_KEY is not set: using a random key, so all sessions end when the server restarts")
     if not ADMIN_KEY:
         log.warning("ADMIN_KEY is not set: admin-key endpoints are disabled")
-    if EMAIL_VERIFICATION == "off":
-        log.warning("EMAIL_VERIFICATION=off: sign-ups are not email-verified")
-    elif email_provider():
+    if email_provider():
         log.info("Email delivery: %s (from %s)", email_provider(), FROM_EMAIL)
-    elif not EMAIL_DEV_MODE:
-        log.warning("No email provider configured (RESEND_API_KEY, BREVO_API_KEY or SMTP_USER/SMTP_PASSWORD): sign-up is disabled")
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
         (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
@@ -858,92 +823,24 @@ async def start_scheduler():
 # -------------------------------------------------------------
 # Auth endpoints
 # -------------------------------------------------------------
-MAX_VERIFY_ATTEMPTS = 5
-
-
-@app.post("/auth/request-verification")
-@limiter.limit("3/minute")
-def request_verification(req: RequestVerificationRequest, request: Request, session: Session = Depends(get_session)):
-    """Step 1: Send verification code to email before signup"""
-    req.name  = req.name.strip()[:64]
-    req.email = req.email.strip().lower()
-
-    if not req.name or not req.email or not req.password:
+@app.post("/auth/signup", response_model=AuthResponse)
+@limiter.limit("5/minute")
+def signup(req: SignUpRequest, request: Request, session: Session = Depends(get_session)):
+    name  = req.name.strip()[:64]
+    email = str(req.email).strip().lower()
+    if not name or not req.password:
         raise HTTPException(status_code=400, detail="All fields are required")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-
-    existing = session.exec(select(User).where(User.email == req.email)).first()
-    if existing:
+    if session.exec(select(User).where(User.email == email)).first():
         raise HTTPException(status_code=409, detail="An account with that email already exists")
 
-    if EMAIL_VERIFICATION == "off":
-        user = User(name=req.name, email=req.email, hashed_password=hash_password(req.password))
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        token = _create_session(session, user, request)
-        log.info("New user signed up (email not verified): %s (%s)", user.name, user.email)
-        return {"verification_required": False, "token": token,
-                "user": {"id": user.id, "name": user.name, "email": user.email}}
-
-    code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
-    verification_codes[req.email] = {
-        "code": code,
-        "name": req.name,
-        "password_hash": hash_password(req.password),
-        "expires": time.time() + 600,
-        "attempts": 0,
-    }
-
-    if not send_verification_email(req.email, code):
-        if EMAIL_DEV_MODE:
-            log.warning("EMAIL_DEV_MODE: returning verification code in response")
-            return {"message": "Verification code sent (testing mode)", "code": code}
-        del verification_codes[req.email]
-        if not email_provider():
-            raise HTTPException(status_code=503, detail="Email delivery is not configured on the server")
-        raise HTTPException(status_code=502, detail="Could not send the verification email. Please try again later")
-
-    log.info("Verification code sent to %s", req.email)
-    return {"verification_required": True, "message": "Verification code sent to your email"}
-
-
-@app.post("/auth/verify-and-signup", response_model=AuthResponse)
-@limiter.limit("5/minute")
-def verify_and_signup(req: VerifyAndSignUpRequest, request: Request, session: Session = Depends(get_session)):
-    """Step 2: Verify code and create account"""
-    req.email = req.email.strip().lower()
-    req.code  = req.code.strip()
-
-    stored = verification_codes.get(req.email)
-    if not stored:
-        raise HTTPException(status_code=400, detail="No verification request found for this email")
-
-    if time.time() > stored["expires"]:
-        del verification_codes[req.email]
-        raise HTTPException(status_code=400, detail="Verification code expired. Please request a new one")
-
-    if not secrets.compare_digest(req.code, stored["code"]):
-        stored["attempts"] += 1
-        if stored["attempts"] >= MAX_VERIFY_ATTEMPTS:
-            del verification_codes[req.email]
-            raise HTTPException(status_code=400, detail="Too many wrong codes. Please request a new one")
-        raise HTTPException(status_code=400, detail="Invalid verification code")
-
-    existing = session.exec(select(User).where(User.email == req.email)).first()
-    if existing:
-        del verification_codes[req.email]
-        raise HTTPException(status_code=409, detail="An account with that email already exists")
-
-    user = User(name=stored["name"], email=req.email, hashed_password=stored["password_hash"])
+    user = User(name=name, email=email, hashed_password=hash_password(req.password))
     session.add(user)
     session.commit()
     session.refresh(user)
     token = _create_session(session, user, request)
-    del verification_codes[req.email]
-
-    log.info("New user signed up (verified): %s (%s)", user.name, user.email)
+    log.info("New user signed up: %s (%s)", user.name, user.email)
     return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
 
 
