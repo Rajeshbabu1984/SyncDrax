@@ -2643,11 +2643,10 @@ async def remove_bookmark(
 # -------------------------------------------------------------
 # User profiles & avatars
 # -------------------------------------------------------------
-def _user_profile_dict(u: User) -> dict:
-    return {
+def _user_profile_dict(u: User, include_email: bool = True) -> dict:
+    d = {
         "id":         u.id,
         "name":       u.name,
-        "email":      u.email,
         "avatar_url": u.avatar_url,
         "status":     u.status,
         "bio":        u.bio,
@@ -2655,6 +2654,9 @@ def _user_profile_dict(u: User) -> dict:
         "role":       u.role,
         "joined":     u.created_at.isoformat(),
     }
+    if include_email:
+        d["email"] = u.email
+    return d
 
 
 @app.get("/users/me/profile")
@@ -2715,13 +2717,13 @@ async def upload_avatar(
 @app.get("/users/{user_id}/profile")
 async def get_user_profile(
     user_id: int,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     u = session.get(User, user_id)
     if not u:
         raise HTTPException(404, "User not found")
-    return _user_profile_dict(u)
+    return _user_profile_dict(u, include_email=(u.id == current_user.id or _is_staff(current_user)))
 
 
 # -------------------------------------------------------------
