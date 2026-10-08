@@ -340,10 +340,13 @@ function handleServerMsg(msg) {
         maybePushNotif('\u26a1 Volt', m.content || 'Automated message');
       }
       // @mention desktop notification for this user
-      if (m.sender_id !== user.id && m.content && user.name) {
-        const isMuted = notifPrefs[m.channel_id]?.muted;
-        if (!isMuted && m.content.toLowerCase().includes('@' + user.name.toLowerCase())) {
+      if (m.sender_id !== user.id && !notifPrefs[m.channel_id]?.muted) {
+        const mentioned = !!(m.content && user.name && m.content.toLowerCase().includes('@' + user.name.toLowerCase()));
+        if (mentioned) {
           maybePushNotif(`\uD83D\uDD14 ${m.sender_name} mentioned you`, m.content.slice(0, 100));
+          playSound('mention');
+        } else if (document.hidden || !(activeType === 'channel' && activeId === m.channel_id)) {
+          playSound('message');
         }
       }
       break;
@@ -362,6 +365,7 @@ function handleServerMsg(msg) {
       // Push notification for incoming DMs
       if (m.sender_id !== user.id) {
         maybePushNotif(m.sender_name, m.content || '📎 File');
+        playSound('message');
       }
       break;
     }
@@ -1212,16 +1216,21 @@ async function executeSlashCommand(text) {
       ? allUsers.find(u => u.name.toLowerCase() === targetName)
       : allUsers.find(u => u.id === user.id);
     if (!target) { showToast('User not found'); return; }
-    const xpRes = await authFetch(`/users/me/xp`);
-    const warnRes = await authFetch(`/mod/warnings/${target.id}`);
-    const xpData   = xpRes.ok   ? await xpRes.json()  : { xp: 0, level: 1 };
-    const warnings = warnRes.ok ? await warnRes.json() : [];
+    const [xpRes, warnRes, profRes] = await Promise.all([
+      authFetch(`/users/${target.id}/xp`),
+      authFetch(`/mod/warnings/${target.id}`),
+      authFetch(`/users/${target.id}/profile`),
+    ]);
+    const xpData   = xpRes.ok   ? await xpRes.json()   : { xp: 0, level: 1 };
+    const warnings = warnRes.ok ? await warnRes.json() : null;  // staff-only
+    const profile  = profRes.ok ? await profRes.json() : {};
+    const joined   = profile.joined ? new Date(profile.joined).toLocaleDateString() : 'unknown';
     await _postVolt(
       `🪪 **${target.name}**\n` +
       `${target.title ? '> ' + target.title + '\n' : ''}` +
       `🏅 Level ${xpData.level} · ${xpData.xp} XP\n` +
-      `⚠️ Warnings: ${warnings.length}\n` +
-      `📅 Joined: ${target.id ? 'User #' + target.id : 'unknown'}`
+      (warnings ? `⚠️ Warnings: ${warnings.length}\n` : '') +
+      `📅 Joined: ${joined}`
     );
     return;
   }
@@ -2307,7 +2316,7 @@ function initVoiceHandlers() {
   });
 
   if (stopBtn) stopBtn.addEventListener('click', () => {
-    voiceRecorder?.stop();
+    if (voiceRecorder && voiceRecorder.state !== 'inactive') voiceRecorder.stop();
     stopBtn.disabled = true;
     clearInterval(voiceTimerInterval);
   });
@@ -2333,7 +2342,11 @@ function initVoiceHandlers() {
   });
 
   if (cancelBtn) cancelBtn.addEventListener('click', () => {
-    voiceRecorder?.stop();
+    if (voiceRecorder && voiceRecorder.state !== 'inactive') {
+      voiceRecorder.onstop = () => voiceRecorder.stream.getTracks().forEach(t => t.stop());
+      voiceRecorder.stop();
+    }
+    voiceChunks = [];
     clearInterval(voiceTimerInterval);
     overlay?.classList.add('hidden');
   });
@@ -2588,7 +2601,9 @@ async function openScheduleModal() {
   // Default: 1 hour from now
   const d = new Date(Date.now() + 60 * 60 * 1000);
   d.setSeconds(0, 0);
-  document.getElementById('schedTimeInput').value = d.toISOString().slice(0, 16);
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('schedTimeInput').value =
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   await loadScheduled();
 }
 
@@ -3565,6 +3580,7 @@ async function openSummarizeModal() {
 // FEATURE: Task / Kanban Board
 // ═══════════════════════════════════════════════════════════
 let _boardTasks = [];
+let _boardChannelId = null;
 let _dragTaskId = null;
 
 async function openTaskBoard() {
@@ -3574,7 +3590,8 @@ async function openTaskBoard() {
 }
 
 async function reloadTaskBoard() {
-  const res = await authFetch(`/board-tasks?channel_id=${activeId}`);
+  _boardChannelId = activeId;
+  const res = await authFetch(`/board-tasks?channel_id=${_boardChannelId}`);
   if (!res.ok) { showToast('Failed to load tasks'); return; }
   _boardTasks = await res.json();
   renderKanban();
@@ -3647,7 +3664,7 @@ function renderKanban() {
       if (!title) return;
       await authFetch('/board-tasks', {
         method: 'POST',
-        body: JSON.stringify({ channel_id: activeId, title, status })
+        body: JSON.stringify({ channel_id: _boardChannelId, title, status })
       });
       await reloadTaskBoard();
     });
@@ -3657,6 +3674,7 @@ function renderKanban() {
 // Handle real-time task events from WebSocket
 function handleTaskWsEvent(msg) {
   if (msg.type === 'task_created' || msg.type === 'task_updated') {
+    if (!msg.task || msg.task.channel_id !== _boardChannelId) return;
     const idx = _boardTasks.findIndex(t => t.id === msg.task.id);
     if (idx >= 0) _boardTasks[idx] = msg.task; else _boardTasks.push(msg.task);
     if (!document.getElementById('taskBoardOverlay').classList.contains('hidden')) renderKanban();
@@ -3919,9 +3937,14 @@ async function loadTemplates() {
     <div class="template-item">
       <span class="t-title">${esc(t.title)}</span>
       <span class="t-content">${esc(t.content)}</span>
-      <button class="use-template-btn" onclick="useTemplate(${JSON.stringify(t.content).replace(/"/g,'&quot;')})">Use</button>
-      <button class="del-template-btn" onclick="deleteTemplate(${t.id})" title="Delete"><i class="fa-solid fa-trash"></i></button>
+      <button class="use-template-btn" data-id="${Number(t.id)}">Use</button>
+      <button class="del-template-btn" data-id="${Number(t.id)}" title="Delete"><i class="fa-solid fa-trash"></i></button>
     </div>`).join('');
+  const byId = new Map(tmpl.map(t => [Number(t.id), t]));
+  list.querySelectorAll('.use-template-btn').forEach(btn =>
+    btn.addEventListener('click', () => useTemplate(byId.get(Number(btn.dataset.id))?.content || '')));
+  list.querySelectorAll('.del-template-btn').forEach(btn =>
+    btn.addEventListener('click', () => deleteTemplate(Number(btn.dataset.id))));
 }
 function useTemplate(content) {
   const inp = document.getElementById('msgInput');
@@ -4103,9 +4126,6 @@ function initNewFeatureHandlers2() {
     });
   }
 
-  // Notification sounds on channel_message (play sound via wrapper)
-  document.addEventListener('synctact_new_msg', () => playSound('message'));
-  document.addEventListener('synctact_mention', () => playSound('mention'));
 }
 
 (function captureInviteParam() {

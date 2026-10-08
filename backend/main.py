@@ -3625,6 +3625,18 @@ def get_my_xp(
     return {"xp": xp_rec.xp, "level": xp_rec.level, "next_level_xp": next_xp}
 
 
+@app.get("/users/{user_id}/xp")
+def get_user_xp(
+    user_id: int,
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    xp_rec = session.exec(select(UserXP).where(UserXP.user_id == user_id)).first()
+    if not xp_rec:
+        return {"xp": 0, "level": 1}
+    return {"xp": xp_rec.xp, "level": xp_rec.level}
+
+
 # =============================================================
 # ── AI Channel Summarizer ─────────────────────────────────────
 # =============================================================
