@@ -376,9 +376,6 @@ function handleServerMsg(msg) {
     }
 
     case 'reaction_update': {
-      const pill = document.querySelector(`[data-msg-id="${msg.message_id}"] .reactions-row`);
-      if (pill) renderReactions(pill.parentElement.querySelector('[data-msg-id]') || pill.parentElement, msg.message_id, msg.reactions);
-      // re-render reactions row in place
       const msgEl = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
       if (msgEl) {
         let rr = msgEl.querySelector('.reactions-row');
