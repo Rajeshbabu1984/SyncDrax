@@ -521,7 +521,7 @@ function handleServerMsg(msg) {
       if (bubble) {
         // Update text span
         const textEl = bubble.querySelector('.msg-text');
-        if (textEl) textEl.innerHTML = renderMentions(esc(m.content));
+        if (textEl) textEl.innerHTML = renderMessageText(m.content);
         // Add/update edited label
         let editedEl = bubble.querySelector('.edited-label');
         if (!editedEl) {
@@ -846,7 +846,7 @@ function appendMessage(m, initial) {
 
   let inner = '';
   if (m.forwarded_from) inner += `<span class="forwarded-label"><i class="fa-solid fa-share"></i> Forwarded</span>`;
-  if (m.content) inner += `<span class="msg-text">${renderMentions(typeof renderMarkdown === 'function' ? renderMarkdown(m.content) : esc(m.content))}</span>`;
+  if (m.content) inner += `<span class="msg-text">${renderMessageText(m.content)}</span>`;
   if (m.edited)  inner += `<span class="edited-label">(edited)</span>`;
   if (m.file_url && fileHref(m.file_url)) {
     const fullUrl   = fileHref(m.file_url);
@@ -1609,10 +1609,17 @@ function fileHref(url) {
 }
 
 // Render @mentions as highlighted spans
+// Input must be escaped HTML containing no tags with attributes (renderMarkdown
+// holds links in placeholders before calling this).
 function renderMentions(escapedText) {
-  return escapedText.replace(/@([\w\d_\- ]{1,32})/g, (match, name) => {
-    const isMe = user.name.toLowerCase() === name.toLowerCase();
-    return `<span class="mention${isMe ? ' mention-me' : ''}">${match}</span>`;
+  const myName = esc((user && user.name) || '');
+  const me = myName.toLowerCase();
+  return escapedText.replace(/(^|[^\w&;])@([\w.\-]{1,32}(?: [\w.\-]{1,32})?)/g, (match, pre, name) => {
+    // Names may contain one space ("Jane Doe"); only consume the second word if it completes my name
+    let mention = name.split(' ')[0];
+    if (me && name.toLowerCase() === me) mention = name;
+    const isMe = me && mention.toLowerCase() === me;
+    return `${pre}<span class="mention${isMe ? ' mention-me' : ''}">@${mention}</span>${name.slice(mention.length)}`;
   });
 }
 
@@ -2032,7 +2039,7 @@ function startEditMessage(msgId) {
     if (res.ok) {
       cancel();
       // WS broadcast will update the bubble for everyone else; update locally too
-      textEl.innerHTML = renderMentions(esc(newText));
+      textEl.innerHTML = renderMessageText(newText);
       bubble.dataset.msgContent = newText;
       let editedEl = bubble.querySelector('.edited-label');
       if (!editedEl) { editedEl = document.createElement('span'); editedEl.className = 'edited-label'; textEl.after(editedEl); }
@@ -2934,35 +2941,52 @@ window.toggleTask = async function(id, btn) {
 // ── Markdown renderer (lightweight) ─────────────────────────────────────────
 function renderMarkdown(rawText) {
   if (!rawText) return '';
-  let s = esc(rawText);
-  // Code blocks  ```lang\n…```  (with syntax highlighting via highlight.js)
-  s = s.replace(/```([a-z]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
-    let highlighted = '';
+  // Code and links are rendered first and swapped for placeholders so that later
+  // passes (escaping, emphasis, mentions) can't corrupt their contents or attributes.
+  const slots = [];
+  const hold = (html) => `\u0001${slots.push(html) - 1}\u0001`;
+  const linkStyle = 'color:var(--purple-l);';
+  let s = String(rawText).replace(/\u0001/g, '');
+
+  // Code blocks  ```lang\n…```  (highlight.js escapes its own output)
+  s = s.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+    code = code.replace(/^\n+|\s+$/g, '');
+    let highlighted;
     try {
       highlighted = lang && window.hljs && window.hljs.getLanguage(lang)
-        ? window.hljs.highlight(code.trim(), { language: lang }).value
-        : window.hljs ? window.hljs.highlightAuto(code.trim()).value : code.trim();
-    } catch(e) { highlighted = code.trim(); }
-    return `<pre class="hljs"><code>${highlighted}</code></pre>`;
+        ? window.hljs.highlight(code, { language: lang }).value
+        : window.hljs ? window.hljs.highlightAuto(code).value : esc(code);
+    } catch(e) { highlighted = esc(code); }
+    return hold(`<pre class="hljs"><code>${highlighted}</code></pre>`);
   });
   // Inline code  `…`
-  s = s.replace(/`([^`]+)`/g, '<code style="background:var(--bg-input);padding:1px 5px;border-radius:4px;font-family:monospace;font-size:.85em;">$1</code>');
+  s = s.replace(/`([^`\n]+)`/g, (_m, code) =>
+    hold(`<code style="background:var(--bg-input);padding:1px 5px;border-radius:4px;font-family:monospace;font-size:.85em;">${esc(code)}</code>`));
+  // Link [text](url) — label keeps inline formatting, so only the anchor tags are held
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) =>
+    hold(`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">`) + label + hold('</a>'));
+  // Bare URL
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g, (_m, pre, url) =>
+    pre + hold(`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">${esc(url)}</a>`));
+
+  s = esc(s);
   // Bold   **…**
-  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  // Italic *…* or _…_
-  s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  s = s.replace(/_(.+?)_/g, '<em>$1</em>');
+  s = s.replace(/\*\*(?=\S)(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italic *…* or _…_ (not inside words like snake_case or 2*3*4)
+  s = s.replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^\w])_(?=\S)([^_\n]*?\S)_(?!\w)/g, '$1<em>$2</em>');
   // Strikethrough ~~…~~
-  s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  s = s.replace(/~~(?=\S)(.+?)~~/g, '<del>$1</del>');
   // Block quote
   s = s.replace(/^&gt; (.+)$/gm, '<blockquote style="border-left:3px solid var(--purple);padding-left:8px;color:var(--text-muted);margin:2px 0;">$1</blockquote>');
-  // Link [text](url)
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--purple-l);">$1</a>');
-  // Bare URL
-  s = s.replace(/(^|[\s])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener" style="color:var(--purple-l);">$2</a>');
+  s = renderMentions(s);
   // Newlines
   s = s.replace(/\n/g, '<br>');
-  return s;
+  return s.replace(/\u0001(\d+)\u0001/g, (_m, i) => slots[+i]);
+}
+
+function renderMessageText(rawText) {
+  return renderMarkdown(rawText || '');
 }
 
 // ── Theme toggle ─────────────────────────────────────────────────────────────
