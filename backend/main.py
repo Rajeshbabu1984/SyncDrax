@@ -2797,6 +2797,8 @@ async def create_invite(
     channel_id = body.get("channel_id")
     max_uses   = body.get("max_uses")
     exp_hours  = body.get("expires_hours")
+    if channel_id is not None and not session.get(Channel, channel_id):
+        raise HTTPException(404, "Channel not found")
     expires_at = None
     if exp_hours:
         expires_at = datetime.now(timezone.utc) + timedelta(hours=int(exp_hours))
