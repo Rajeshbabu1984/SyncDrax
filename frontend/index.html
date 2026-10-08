@@ -373,7 +373,14 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Failed to send verification code');
-        
+
+        // Server has email verification turned off: the account already exists
+        if (data.verification_required === false && data.token) {
+          saveUser(data.user, data.token);
+          window.location.href = 'chat.html';
+          return;
+        }
+
         // Show step 2
         document.getElementById('signupStep1').style.display = 'none';
         document.getElementById('signupStep2').style.display = 'block';

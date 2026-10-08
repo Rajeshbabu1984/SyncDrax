@@ -15,6 +15,7 @@ Endpoints:
     GET  /rooms                                     � Active room stats
 """
 
+import asyncio
 import base64
 import csv
 import hashlib
@@ -73,12 +74,18 @@ GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_URL        = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
-# Email config for verification
-SMTP_HOST     = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER     = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-FROM_EMAIL    = os.getenv("FROM_EMAIL", SMTP_USER)
+# Email delivery. The first configured provider is used: Resend, Brevo, then SMTP.
+# Render's free instances block outbound SMTP ports, so use an HTTPS API provider there.
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+BREVO_API_KEY  = os.getenv("BREVO_API_KEY", "")
+SMTP_HOST      = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER      = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
+FROM_EMAIL     = os.getenv("FROM_EMAIL") or SMTP_USER or ("onboarding@resend.dev" if RESEND_API_KEY else "")
+FROM_NAME      = os.getenv("FROM_NAME", "SyncTact")
+# "off" lets people sign up without confirming their email address (anyone can claim any address).
+EMAIL_VERIFICATION = os.getenv("EMAIL_VERIFICATION", "required").strip().lower()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synctact.db")
 UPLOADS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
@@ -461,46 +468,87 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def send_verification_email(to_email: str, code: str) -> bool:
-    """Send a 6-digit verification code via email. Returns True on success, False on failure."""
-    if not SMTP_USER or not SMTP_PASSWORD:
-        log.warning("SMTP not configured — skipping email send to %s", to_email)
+def email_provider() -> Optional[str]:
+    if RESEND_API_KEY:
+        return "resend"
+    if BREVO_API_KEY and FROM_EMAIL:
+        return "brevo"
+    if SMTP_USER and SMTP_PASSWORD:
+        return "smtp"
+    return None
+
+
+def send_email(to_email: str, subject: str, text_body: str, html_body: Optional[str] = None) -> bool:
+    """Send one email through the configured provider. Returns True on success."""
+    provider = email_provider()
+    if not provider:
+        log.warning("Email delivery not configured — skipping email to %s", to_email)
         return False
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Your SyncTact Verification Code"
-        msg["From"] = FROM_EMAIL
-        msg["To"] = to_email
-
-        text_body = f"Your verification code is: {code}\n\nThis code will expire in 10 minutes."
-        html_body = f"""
-        <html>
-          <body style="font-family: Arial, sans-serif; padding: 20px;">
-            <div style="max-width: 500px; margin: 0 auto; background: #f9fafb; padding: 30px; border-radius: 8px;">
-              <h2 style="color: #1f2937; margin-bottom: 20px;">Welcome to SyncTact!</h2>
-              <p style="color: #4b5563; font-size: 16px;">Your verification code is:</p>
-              <div style="background: #fff; padding: 20px; border-radius: 6px; text-align: center; margin: 20px 0;">
-                <span style="font-size: 32px; font-weight: bold; color: #5865f2; letter-spacing: 8px;">{code}</span>
-              </div>
-              <p style="color: #6b7280; font-size: 14px;">This code will expire in 10 minutes.</p>
-              <p style="color: #9ca3af; font-size: 12px; margin-top: 30px;">If you didn't request this code, please ignore this email.</p>
-            </div>
-          </body>
-        </html>
-        """
-        msg.attach(MIMEText(text_body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
-
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(FROM_EMAIL, to_email, msg.as_string())
-
-        log.info("Verification email sent to %s", to_email)
+        if provider == "resend":
+            r = httpx.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={"from": f"{FROM_NAME} <{FROM_EMAIL}>", "to": [to_email], "subject": subject,
+                      "text": text_body, **({"html": html_body} if html_body else {})},
+                timeout=15,
+            )
+            r.raise_for_status()
+        elif provider == "brevo":
+            r = httpx.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={"api-key": BREVO_API_KEY, "accept": "application/json"},
+                json={"sender": {"name": FROM_NAME, "email": FROM_EMAIL}, "to": [{"email": to_email}],
+                      "subject": subject, "textContent": text_body,
+                      **({"htmlContent": html_body} if html_body else {})},
+                timeout=15,
+            )
+            r.raise_for_status()
+        else:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = f"{FROM_NAME} <{FROM_EMAIL}>"
+            msg["To"] = to_email
+            msg.attach(MIMEText(text_body, "plain"))
+            if html_body:
+                msg.attach(MIMEText(html_body, "html"))
+            if SMTP_PORT == 465:
+                with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                    server.sendmail(FROM_EMAIL, to_email, msg.as_string())
+            else:
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+                    server.starttls()
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                    server.sendmail(FROM_EMAIL, to_email, msg.as_string())
+        log.info("Email sent to %s via %s", to_email, provider)
         return True
+    except httpx.HTTPStatusError as e:
+        log.error("Email to %s via %s rejected: %s %s", to_email, provider, e.response.status_code, e.response.text[:300])
     except Exception as e:
-        log.error("Failed to send verification email to %s: %s", to_email, e)
-        return False
+        log.error("Failed to send email to %s via %s: %s", to_email, provider, e)
+    return False
+
+
+def send_verification_email(to_email: str, code: str) -> bool:
+    """Send a 6-digit verification code via email. Returns True on success, False on failure."""
+    text_body = f"Your verification code is: {code}\n\nThis code will expire in 10 minutes."
+    html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <div style="max-width: 500px; margin: 0 auto; background: #f9fafb; padding: 30px; border-radius: 8px;">
+          <h2 style="color: #1f2937; margin-bottom: 20px;">Welcome to SyncTact!</h2>
+          <p style="color: #4b5563; font-size: 16px;">Your verification code is:</p>
+          <div style="background: #fff; padding: 20px; border-radius: 6px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 32px; font-weight: bold; color: #5865f2; letter-spacing: 8px;">{code}</span>
+          </div>
+          <p style="color: #6b7280; font-size: 14px;">This code will expire in 10 minutes.</p>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 30px;">If you didn't request this code, please ignore this email.</p>
+        </div>
+      </body>
+    </html>
+    """
+    return send_email(to_email, "Your SyncTact Verification Code", text_body, html_body)
 
 
 # -------------------------------------------------------------
@@ -705,6 +753,12 @@ def on_startup():
         log.warning("SECRET_KEY is not set: using a random key, so all sessions end when the server restarts")
     if not ADMIN_KEY:
         log.warning("ADMIN_KEY is not set: admin-key endpoints are disabled")
+    if EMAIL_VERIFICATION == "off":
+        log.warning("EMAIL_VERIFICATION=off: sign-ups are not email-verified")
+    elif email_provider():
+        log.info("Email delivery: %s (from %s)", email_provider(), FROM_EMAIL)
+    elif not EMAIL_DEV_MODE:
+        log.warning("No email provider configured (RESEND_API_KEY, BREVO_API_KEY or SMTP_USER/SMTP_PASSWORD): sign-up is disabled")
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
         (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
@@ -823,6 +877,16 @@ def request_verification(req: RequestVerificationRequest, request: Request, sess
     if existing:
         raise HTTPException(status_code=409, detail="An account with that email already exists")
 
+    if EMAIL_VERIFICATION == "off":
+        user = User(name=req.name, email=req.email, hashed_password=hash_password(req.password))
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token = _create_session(session, user, request)
+        log.info("New user signed up (email not verified): %s (%s)", user.name, user.email)
+        return {"verification_required": False, "token": token,
+                "user": {"id": user.id, "name": user.name, "email": user.email}}
+
     code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     verification_codes[req.email] = {
         "code": code,
@@ -837,10 +901,12 @@ def request_verification(req: RequestVerificationRequest, request: Request, sess
             log.warning("EMAIL_DEV_MODE: returning verification code in response")
             return {"message": "Verification code sent (testing mode)", "code": code}
         del verification_codes[req.email]
-        raise HTTPException(status_code=503, detail="Email delivery is not configured on the server")
+        if not email_provider():
+            raise HTTPException(status_code=503, detail="Email delivery is not configured on the server")
+        raise HTTPException(status_code=502, detail="Could not send the verification email. Please try again later")
 
     log.info("Verification code sent to %s", req.email)
-    return {"message": "Verification code sent to your email"}
+    return {"verification_required": True, "message": "Verification code sent to your email"}
 
 
 @app.post("/auth/verify-and-signup", response_model=AuthResponse)
@@ -1542,29 +1608,23 @@ def update_notif_prefs(body: NotifPrefIn, current_user: User = Depends(get_curre
 
 @app.post("/email-digest")
 async def trigger_email_digest(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    """Stub: in production wire SMTP_HOST/SMTP_USER/SMTP_PASS env vars."""
-    smtp_host = os.getenv("SMTP_HOST")
-    if not smtp_host:
-        return {"ok": False, "detail": "SMTP not configured on server"}
+    if not email_provider():
+        return {"ok": False, "detail": "Email delivery is not configured on the server"}
 
     since = datetime.now(timezone.utc) - timedelta(hours=24)
-    msgs = session.exec(select(ChatMessage).where(ChatMessage.created_at >= since).order_by(ChatMessage.created_at.desc()).limit(20)).all()
+    msgs = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.created_at >= since)
+        .where(ChatMessage.channel_id.is_not(None) |
+               (ChatMessage.sender_id == current_user.id) |
+               (ChatMessage.dm_to_user_id == current_user.id))
+        .order_by(ChatMessage.created_at.desc()).limit(20)
+    ).all()
     body_lines = [f"• [{m.sender_name}] {m.content[:120]}" for m in msgs if m.content]
     body_text = "Your SyncTact digest (last 24 h):\n\n" + "\n".join(body_lines[:20])
-    try:
-        import smtplib
-        from email.mime.text import MIMEText
-        msg = MIMEText(body_text)
-        msg["Subject"] = "SyncTact Daily Digest"
-        msg["From"]    = os.getenv("SMTP_USER", "noreply@synctact.app")
-        msg["To"]      = current_user.email
-        with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT", 587))) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASSWORD)
-            s.send_message(msg)
-        return {"ok": True, "sent_to": current_user.email}
-    except Exception as exc:
-        return {"ok": False, "detail": str(exc)}
+    if not await asyncio.to_thread(send_email, current_user.email, "SyncTact Daily Digest", body_text):
+        return {"ok": False, "detail": "Could not send the digest email"}
+    return {"ok": True, "sent_to": current_user.email}
 
 
 # -------------------------------------------------------------
