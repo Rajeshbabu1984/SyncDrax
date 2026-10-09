@@ -70,7 +70,9 @@ ADMIN_KEY         = os.getenv("ADMIN_KEY", "")
 MAX_UPLOAD_BYTES  = 25 * 1024 * 1024
 GEMINI_API_KEY    = os.getenv("Syntact_Key") or os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-GEMINI_URL        = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+# Tried when the main model is overloaded or rate-limited; set to "" to disable.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
+GEMINI_API_BASE   = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # Email delivery (daily digest). The first configured provider is used: Resend, Brevo, then SMTP.
 # Render's free instances block outbound SMTP ports, so use an HTTPS API provider there.
@@ -567,31 +569,64 @@ def _ensure_volt_user() -> None:
         VOLT_USER_ID = u.id
 
 
-async def _volt_generate(contents: list, system: str = VOLT_SYSTEM_PROMPT) -> str:
-    """Call Gemini with a list of {role, parts} turns; always returns text to show the user."""
+class GeminiError(Exception):
+    def __init__(self, message: str, busy: bool = False):
+        super().__init__(message)
+        self.busy = busy   # overloaded / rate-limited rather than misconfigured
+
+
+_GEMINI_RETRYABLE = {429, 500, 502, 503, 504}
+
+
+async def gemini_generate(contents: list, system: Optional[str] = None) -> str:
+    """Call Gemini, retrying temporary overloads and then trying the fallback model.
+
+    contents: list of {"role": "user"|"model", "parts": [{"text": ...}]}. Raises GeminiError.
+    """
     if not GEMINI_API_KEY:
-        return ("⚡ Volt: AI is not configured — set the `GEMINI_API_KEY` (or `Syntact_Key`) "
-                "environment variable on the server.")
+        raise GeminiError("AI is not configured \u2014 set the `GEMINI_API_KEY` (or `Syntact_Key`) "
+                          "environment variable on the server.")
+    body = {"contents": contents}
+    if system:
+        body["system_instruction"] = {"parts": [{"text": system}]}
+    models = [GEMINI_MODEL] + ([GEMINI_FALLBACK_MODEL] if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL else [])
+    last_error, busy = "unknown error", False
+    async with httpx.AsyncClient(timeout=30) as hc:
+        for model in models:
+            for attempt in range(2):
+                try:
+                    r = await hc.post(f"{GEMINI_API_BASE}/{model}:generateContent",
+                                      headers={"x-goog-api-key": GEMINI_API_KEY}, json=body)
+                except httpx.HTTPError as e:
+                    log.warning("Gemini %s network error: %s", model, e)
+                    last_error, busy = "couldn't reach the AI service", True
+                else:
+                    if r.status_code == 200:
+                        cand = (r.json().get("candidates") or [{}])[0]
+                        return "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", [])).strip()
+                    try:
+                        detail = r.json().get("error", {}).get("message", "unknown error")
+                    except ValueError:
+                        detail = "unknown error"
+                    log.warning("Gemini %s error %d: %s", model, r.status_code, detail[:300])
+                    last_error = f"Gemini API error {r.status_code} \u2014 {detail}"
+                    busy = r.status_code in _GEMINI_RETRYABLE
+                    if not busy:
+                        raise GeminiError(last_error)
+                if attempt == 0:
+                    await asyncio.sleep(1.5)
+    raise GeminiError(last_error, busy=busy)
+
+
+async def _volt_generate(contents: list, system: str = VOLT_SYSTEM_PROMPT) -> str:
+    """Like gemini_generate, but always returns text to show the user."""
     try:
-        async with httpx.AsyncClient(timeout=30) as hc:
-            r = await hc.post(
-                GEMINI_URL,
-                headers={"x-goog-api-key": GEMINI_API_KEY},
-                json={"system_instruction": {"parts": [{"text": system}]}, "contents": contents},
-            )
-        if r.status_code != 200:
-            log.warning("Volt Gemini error %d: %s", r.status_code, r.text[:300])
-            try:
-                detail = r.json().get("error", {}).get("message", "unknown error")
-            except ValueError:
-                detail = "unknown error"
-            return f"⚡ Volt: Gemini API error {r.status_code} — {detail}"
-        cand = (r.json().get("candidates") or [{}])[0]
-        text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", [])).strip()
-        return text[:4000] or "⚡ Volt: I couldn't come up with a reply to that — try rephrasing?"
-    except Exception as e:
-        log.warning("Volt AI error: %s", e)
-        return "⚡ Volt: I couldn't reach the AI service just now. Please try again."
+        text = await gemini_generate(contents, system)
+    except GeminiError as e:
+        if e.busy:
+            return "\u26a1 Volt: The AI service is busy right now. Please try again in a minute."
+        return f"\u26a1 Volt: {e}"
+    return text[:4000] or "\u26a1 Volt: I couldn't come up with a reply to that \u2014 try rephrasing?"
 
 
 async def _volt_dm_reply(user_id: int) -> None:
@@ -3736,6 +3771,18 @@ def get_user_xp(
     return {"xp": xp_rec.xp, "level": xp_rec.level}
 
 
+async def _gemini_or_http_error(prompt: str) -> str:
+    try:
+        text = await gemini_generate([{"role": "user", "parts": [{"text": prompt}]}])
+    except GeminiError as e:
+        if e.busy:
+            raise HTTPException(503, "The AI service is busy right now. Please try again in a minute.")
+        raise HTTPException(502, str(e))
+    if not text:
+        raise HTTPException(502, "The AI service returned an empty response")
+    return text
+
+
 # =============================================================
 # ── AI Channel Summarizer ─────────────────────────────────────
 # =============================================================
@@ -3762,15 +3809,7 @@ async def summarize_channel(
         "Summarize the following conversation in 3-5 bullet points. Be concise and factual.\n\n"
         + transcript
     )
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-        )
-    if r.status_code != 200:
-        raise HTTPException(502, "AI service error")
-    data = r.json()
-    summary = data["candidates"][0]["content"]["parts"][0]["text"]
+    summary = await _gemini_or_http_error(prompt)
     return {"summary": summary}
 
 
@@ -3941,15 +3980,7 @@ async def meeting_summary(
         "- Key discussion points\n- Decisions made\n- Action items (who does what)\n\n"
         + transcript
     )
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-        )
-    if r.status_code != 200:
-        raise HTTPException(502, "AI service error")
-    data = r.json()
-    notes = data["candidates"][0]["content"]["parts"][0]["text"]
+    notes = await _gemini_or_http_error(prompt)
     # Post as a bot message in the channel
     cm = ChatMessage(
         channel_id=channel_id, sender_id=0, sender_name="Volt",
