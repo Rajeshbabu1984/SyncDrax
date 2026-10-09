@@ -28,8 +28,12 @@ services:
       - key: FROM_EMAIL
         sync: false
       # TURN relay so video calls connect across different networks.
-      # Free: sign up at metered.ca, create a TURN credential, then set both of these
-      # (domain looks like yourapp.metered.live, from the credential's API URL).
+      # Sign up at dash.cloudflare.com (email only), then Realtime → TURN → Create key.
+      # Paste the key id and the key's API token here. 1,000 GB free, then $0.05/GB.
+      - key: CLOUDFLARE_TURN_KEY_ID
+        sync: false
+      - key: CLOUDFLARE_TURN_API_TOKEN
+        sync: false
       - key: METERED_TURN_DOMAIN
         sync: false
       - key: METERED_TURN_API_KEY

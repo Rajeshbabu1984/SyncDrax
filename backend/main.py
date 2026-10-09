@@ -85,9 +85,12 @@ SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
 FROM_EMAIL     = os.getenv("FROM_EMAIL") or SMTP_USER or ("onboarding@resend.dev" if RESEND_API_KEY else "")
 FROM_NAME      = os.getenv("FROM_NAME", "SyncTact")
 
-# Video calls between different networks need a TURN relay. Either:
-#   METERED_TURN_DOMAIN + METERED_TURN_API_KEY  (free 20 GB/month at metered.ca), or
-#   TURN_URLS (comma-separated) + TURN_USERNAME + TURN_CREDENTIAL  (Twilio, coturn, ...)
+# Video calls between different networks need a TURN relay. First match wins:
+#   CLOUDFLARE_TURN_KEY_ID + CLOUDFLARE_TURN_API_TOKEN  (personal Cloudflare account, 1,000 GB free), or
+#   METERED_TURN_DOMAIN + METERED_TURN_API_KEY, or
+#   TURN_URLS (comma-separated) + TURN_USERNAME + TURN_CREDENTIAL
+CLOUDFLARE_TURN_KEY_ID    = os.getenv("CLOUDFLARE_TURN_KEY_ID", "").strip()
+CLOUDFLARE_TURN_API_TOKEN = os.getenv("CLOUDFLARE_TURN_API_TOKEN", "").strip()
 METERED_TURN_DOMAIN  = os.getenv("METERED_TURN_DOMAIN", "").strip().removeprefix("https://").strip("/")
 METERED_TURN_API_KEY = os.getenv("METERED_TURN_API_KEY", "").strip()
 TURN_URLS            = os.getenv("TURN_URLS", "").strip()
@@ -1007,14 +1010,15 @@ def on_startup():
     log.info("Database: %s", engine.dialect.name)
     if email_provider():
         log.info("Email delivery: %s (from %s)", email_provider(), FROM_EMAIL)
-    if METERED_TURN_API_KEY and METERED_TURN_DOMAIN:
+    if CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN:
+        log.info("TURN relay: Cloudflare")
+    elif METERED_TURN_API_KEY and METERED_TURN_DOMAIN:
         log.info("TURN relay: Metered (%s)", METERED_TURN_DOMAIN)
     elif TURN_URLS and TURN_USERNAME and TURN_CREDENTIAL:
         log.info("TURN relay: %s", TURN_URLS.split(",")[0].strip())
     else:
         log.warning("No TURN server configured: video calls only connect when both people can reach "
-                    "each other directly. Set METERED_TURN_DOMAIN and METERED_TURN_API_KEY, or TURN_URLS, "
-                    "TURN_USERNAME and TURN_CREDENTIAL.")
+                    "each other directly. Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN.")
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
         (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
@@ -1895,9 +1899,47 @@ def _static_turn_servers() -> list:
              "username": TURN_USERNAME, "credential": TURN_CREDENTIAL}]
 
 
+def _without_blocked_turn_ports(servers: list) -> list:
+    """Browsers block TURN on port 53, and waiting on it delays the call."""
+    kept = []
+    for server in servers:
+        urls = server.get("urls")
+        if isinstance(urls, str):
+            urls = [urls]
+        if isinstance(urls, list):
+            urls = [u for u in urls if ":53" not in u.split("?", 1)[0]]
+            if not urls:
+                continue
+            server = {**server, "urls": urls if len(urls) > 1 else urls[0]}
+        kept.append(server)
+    return kept
+
+
+async def _cloudflare_ice_servers() -> Optional[list]:
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.post(
+                f"https://rtc.live.cloudflare.com/v1/turn/keys/{CLOUDFLARE_TURN_KEY_ID}/credentials/generate-ice-servers",
+                headers={"Authorization": f"Bearer {CLOUDFLARE_TURN_API_TOKEN}"},
+                json={"ttl": 86400},
+            )
+        data = r.json() if r.status_code in (200, 201) else None
+        servers = data.get("iceServers") if isinstance(data, dict) else None
+        if isinstance(servers, list) and servers:
+            return _without_blocked_turn_ports(servers)
+        log.warning("Cloudflare TURN credentials failed: HTTP %s", r.status_code)
+    except Exception as exc:
+        log.warning("Cloudflare TURN credentials failed: %s", exc)
+    return None
+
+
 @app.get("/ice-servers")
 async def ice_servers():
     """STUN plus a TURN relay, for meeting peer connections. No login required (guests join calls)."""
+    if CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN:
+        servers = await _cloudflare_ice_servers()
+        if servers:
+            return {"iceServers": servers}
     if METERED_TURN_API_KEY and METERED_TURN_DOMAIN:
         try:
             async with httpx.AsyncClient(timeout=8) as client:
