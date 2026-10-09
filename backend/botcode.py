@@ -1,11 +1,24 @@
 """Run a bot script written in the website.
 
-The script is ordinary Python. It can use the chat helpers and normal
-logic (if, for, while, lists, variables). It cannot import anything, touch
-files, or reach the network.
+The script is ordinary Python plus most of the standard library: math, json,
+dates, text, random, and so on. Modules that can read the server, run programs,
+or open network connections are refused.
 """
 import ast
 import sys
+import types
+
+# Standard-library modules a bot may import. Nothing here can run a program,
+# read server files, or open a connection.
+ALLOWED_MODULES = {
+    "math", "cmath", "random", "statistics", "decimal", "fractions", "numbers",
+    "re", "json", "csv", "datetime", "calendar", "time",
+    "collections", "itertools", "functools", "operator", "heapq", "bisect",
+    "string", "textwrap", "unicodedata", "html", "difflib",
+    "hashlib", "hmac", "base64", "binascii", "uuid",
+    "copy", "enum", "pprint", "dataclasses",
+    "urllib.parse",
+}
 
 SAFE_NODES = {
     ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Expr, ast.If, ast.For,
@@ -14,12 +27,7 @@ SAFE_NODES = {
     ast.AugAssign, ast.Return, ast.Pass, ast.And, ast.Or, ast.Not, ast.Eq, ast.NotEq,
     ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Add, ast.Sub, ast.Mult,
     ast.Div, ast.Mod, ast.USub, ast.JoinedStr, ast.FormattedValue, ast.List, ast.Tuple,
-    ast.Dict, ast.Subscript, ast.Slice, ast.keyword,
-}
-SAFE_ATTRS = {"text", "user", "channel", "lower", "upper", "strip", "startswith", "endswith", "split", "replace", "join"}
-SAFE_CALLS = {
-    "reply", "say", "say_in", "notify", "members", "channels", "recent",
-    "remember", "recall", "forget", "len", "str", "int", "range", "min", "max", "abs",
+    ast.Dict, ast.Subscript, ast.Slice, ast.keyword, ast.Import, ast.ImportFrom, ast.alias,
 }
 
 
@@ -34,23 +42,30 @@ class Msg:
         self.channel = str(channel or "")
 
 
+def _allowed_module(name: str) -> bool:
+    return name in ALLOWED_MODULES
+
+
 def _check(tree: ast.AST) -> None:
     for node in ast.walk(tree):
         if type(node) not in SAFE_NODES:
             raise ScriptError(f"That code can't use {type(node).__name__}")
-        if isinstance(node, ast.Attribute):
-            if node.attr not in SAFE_ATTRS:
-                raise ScriptError(f"Can't use .{node.attr}")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            raise ScriptError(f"Can't use .{node.attr}")
         if isinstance(node, ast.Name) and node.id.startswith("_"):
             raise ScriptError("Names starting with _ are not allowed")
-        if isinstance(node, ast.Call):
-            fn = node.func
-            if isinstance(fn, ast.Name) and fn.id not in SAFE_CALLS:
-                raise ScriptError(f"Can't call {fn.id}")
-            if isinstance(fn, ast.Attribute) and fn.attr not in SAFE_ATTRS:
-                raise ScriptError(f"Can't call .{fn.attr}")
         if isinstance(node, ast.FunctionDef) and node.name.startswith("_"):
             raise ScriptError("Function names starting with _ are not allowed")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if not _allowed_module(alias.name):
+                    raise ScriptError(f"Can't import {alias.name}")
+        if isinstance(node, ast.ImportFrom):
+            if node.level or not node.module or not _allowed_module(node.module):
+                raise ScriptError(f"Can't import {node.module or ''}")
+            for alias in node.names:
+                if alias.name.startswith("_"):
+                    raise ScriptError(f"Can't import {alias.name}")
 
 
 def function_names(source: str) -> list:
@@ -62,14 +77,39 @@ def function_names(source: str) -> list:
     return [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
 
 
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level or name not in ALLOWED_MODULES:
+        raise ScriptError(f"Can't import {name}" if name else "Relative imports are not allowed")
+    module = __import__(name, globals, locals, fromlist, 0)
+    if name == "time":
+        safe = types.ModuleType("time")
+        for attr in ("time", "monotonic", "strftime", "gmtime", "localtime", "struct_time"):
+            setattr(safe, attr, getattr(module, attr))
+        return safe
+    return module
+
+
+def _builtins():
+    return {
+        "__import__": _safe_import,
+        "len": len, "str": str, "int": int, "float": float, "bool": bool,
+        "list": list, "dict": dict, "tuple": tuple, "set": set,
+        "min": min, "max": max, "abs": abs, "sum": sum, "round": round,
+        "sorted": sorted, "reversed": reversed, "enumerate": enumerate,
+        "zip": zip, "map": map, "filter": filter, "any": any, "all": all,
+        "isinstance": isinstance, "chr": chr, "ord": ord, "hex": hex,
+        "bin": bin, "oct": oct, "pow": pow, "divmod": divmod, "format": format,
+        "True": True, "False": False, "None": None,
+    }
+
+
 def _load(source: str, helpers: dict) -> dict:
     tree = ast.parse(source or "")
     _check(tree)
-    globs = {"__builtins__": {}}
-    globs.update(helpers)
-    locs = {}
-    exec(compile(tree, "<bot>", "exec"), globs, locs)
-    return locs
+    env = {"__builtins__": _builtins()}
+    env.update(helpers)
+    exec(compile(tree, "<bot>", "exec"), env, env)
+    return env
 
 
 def _limited(fn, *args):

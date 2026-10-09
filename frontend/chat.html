@@ -1184,7 +1184,7 @@
       <button class="modal-btn primary" id="saveBotScriptBtn" style="flex:none;">Save code</button>
     </div>
     <textarea id="botScript" class="modal-input" rows="14" spellcheck="false" style="width:100%;font-family:ui-monospace,monospace;font-size:.8rem;line-height:1.45;resize:vertical;" placeholder="def on_message(msg):&#10;    if &quot;hello&quot; in msg.text.lower():&#10;        reply(&quot;Hi &quot; + msg.user)&#10;    if msg.text.startswith(&quot;!ping&quot;):&#10;        reply(&quot;pong&quot;)&#10;&#10;def every_60():&#10;    say(&quot;Hourly check-in&quot;)"></textarea>
-    <p id="botScriptHint" style="font-size:.75rem;color:var(--text-muted);margin-top:6px;">reply(text) answers here. say(text) posts in the channel chosen above. say_in(&quot;name&quot;, text) posts in another channel. notify(&quot;Name&quot;, text) sends a direct message. members(), channels() and recent(10) read this server. remember(&quot;key&quot;, value) and recall(&quot;key&quot;) keep notes. every_60 runs every 60 minutes. You can use if, for, while, lists and variables. The code stays inside the chat.</p>
+    <p id="botScriptHint" style="font-size:.75rem;color:var(--text-muted);margin-top:6px;">You can import the normal Python library: math, random, json, re, datetime, collections, itertools, hashlib, and the other calculation and text modules. reply, say, say_in, notify, members, channels, recent, remember and recall talk to the chat. Modules that read the server or open a connection are refused.</p>
 
     <hr class="bots-divider" />
 
