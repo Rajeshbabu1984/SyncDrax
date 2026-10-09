@@ -56,6 +56,8 @@ function _updateVoltTargetBtn() {
 }
 let ws            = null;
 let channels      = [];      // [{id, name, description, created_by}]
+let servers       = [];      // [{id, name, is_home, role}]
+let activeServerId = null;
 let activeType    = null;    // 'channel' | 'dm'
 let activeId      = null;    // channel id or user id
 let activeDmName  = '';
@@ -109,6 +111,7 @@ async function initChat() {
   buildChannelEmojiPicker();
 
   // A slow or failing backend must not stop the rest of the UI from wiring up
+  try { await loadServers(); }  catch (e) { console.warn('[init] servers', e); }
   try { await loadChannels(); } catch (e) { console.warn('[init] channels', e); showToast('Could not load channels — retrying when reconnected', 'error'); }
   try { await loadUsers(); }    catch (e) { console.warn('[init] users', e); }
   try { loadCategories(); } catch (e) { console.warn('[init] categories', e); }
@@ -286,7 +289,10 @@ function connectWS() {
     if (_wsRetryDelay > 1000 && activeType && activeId) loadMessages(activeType, activeId);
     _wsRetryDelay = 1000;
     if (!channels.length) {
-      loadChannels().then(() => { if (!activeId && channels.length) openChannel(channels[0]); }).catch(() => {});
+      loadServers()
+        .then(() => loadChannels())
+        .then(() => { if (!activeId && channels.length) openChannel(channels[0]); })
+        .catch(() => {});
       if (!allUsers.length) loadUsers().catch(() => {});
     }
   };
@@ -613,8 +619,101 @@ function handleServerMsg(msg) {
 }
 
 // ── Channels ──────────────────────────────────────────────────────────────────
+const SERVER_COLORS = ['#5865f2', '#57f287', '#fee75c', '#eb459e', '#ed4245', '#3ba55d', '#faa61a'];
+
+async function loadServers() {
+  const res = await authFetch('/servers');
+  if (!res.ok) return;
+  servers = await res.json();
+  const saved = Number(localStorage.getItem('synctact_server'));
+  activeServerId = servers.some(s => s.id === saved) ? saved : (servers[0]?.id ?? null);
+  renderServerRail();
+}
+
+function renderServerRail() {
+  const rail = document.getElementById('serverRail');
+  if (!rail) return;
+  rail.innerHTML = '';
+  servers.forEach(s => {
+    const b = document.createElement('button');
+    b.className = 'server-pill' + (s.id === activeServerId ? ' active' : '');
+    b.title = s.name + (s.is_home ? ' (everyone)' : '');
+    b.textContent = (s.name.trim().charAt(0) || '?').toUpperCase();
+    b.style.background = SERVER_COLORS[s.id % SERVER_COLORS.length];
+    b.addEventListener('click', () => selectServer(s.id));
+    rail.appendChild(b);
+  });
+  const add = document.createElement('button');
+  add.className = 'server-pill add';
+  add.title = 'Create a server';
+  add.textContent = '+';
+  add.addEventListener('click', () => {
+    document.getElementById('serverNameInput').value = '';
+    document.getElementById('createServerOverlay').classList.remove('hidden');
+    document.getElementById('serverNameInput').focus();
+  });
+  rail.appendChild(add);
+  const srv = servers.find(s => s.id === activeServerId);
+  const label = document.getElementById('channelSectionLabel');
+  if (label) label.textContent = srv ? srv.name : 'Channels';
+  const leave = document.getElementById('leaveServerBtn');
+  if (leave) leave.style.display = srv && !srv.is_home ? '' : 'none';
+}
+
+async function selectServer(id) {
+  if (id === activeServerId && channels.length && channels[0]?.server_id === id) {
+    renderServerRail();
+    return;
+  }
+  activeServerId = id;
+  localStorage.setItem('synctact_server', id);
+  renderServerRail();
+  await loadChannels();
+  if (channels.length) openChannel(channels[0]);
+  else if (messagesWrap) messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">This server has no channels yet.</div>';
+}
+
+async function createServer() {
+  const name = document.getElementById('serverNameInput').value.trim();
+  if (!name) { showToast('Give your server a name'); return; }
+  const res = await authFetch('/servers', 'POST', { name });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not create the server', 'error'); return; }
+  document.getElementById('createServerOverlay').classList.add('hidden');
+  servers.push(data);
+  activeServerId = data.id;
+  localStorage.setItem('synctact_server', data.id);
+  renderServerRail();
+  channels = data.channels || [];
+  renderChannelList();
+  if (channels.length) openChannel(channels[0]);
+  showToast(`Server "${data.name}" created. Invite your friends with the link button.`);
+}
+
+document.getElementById('cancelServerBtn')?.addEventListener('click', () =>
+  document.getElementById('createServerOverlay').classList.add('hidden'));
+document.getElementById('createServerBtn')?.addEventListener('click', createServer);
+document.getElementById('serverNameInput')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') createServer();
+});
+document.getElementById('leaveServerBtn')?.addEventListener('click', async () => {
+  const srv = servers.find(s => s.id === activeServerId);
+  if (!srv || srv.is_home) return;
+  if (!confirm(`Leave "${srv.name}"? You'll need a new invite to come back.`)) return;
+  const res = await authFetch(`/servers/${srv.id}/leave`, 'POST');
+  if (!res.ok) { showToast('Could not leave the server', 'error'); return; }
+  servers = servers.filter(s => s.id !== srv.id);
+  activeServerId = servers[0]?.id ?? null;
+  if (activeServerId) localStorage.setItem('synctact_server', activeServerId);
+  renderServerRail();
+  await loadChannels();
+  if (channels.length) openChannel(channels[0]);
+  showToast(`Left ${srv.name}`);
+});
+
 async function loadChannels() {
-  const res = await authFetch('/chat/channels');
+  const q = activeServerId ? `?server_id=${activeServerId}` : '';
+  const res = await authFetch('/chat/channels' + q);
   if (!res.ok) return;
   channels = await res.json();
   renderChannelList();
@@ -1513,8 +1612,9 @@ async function createChannel() {
   const rawName = document.getElementById('channelNameInput').value.trim();
   const desc    = document.getElementById('channelDescInput').value.trim();
   if (!rawName) { showToast('Enter a channel name'); return; }
+  if (!activeServerId) { showToast('Create or pick a server first'); return; }
   const fullName = `${pendingEmoji} ${rawName}`;
-  const res = await authFetch('/chat/channels', 'POST', { name: fullName, description: desc });
+  const res = await authFetch('/chat/channels', 'POST', { name: fullName, description: desc, server_id: activeServerId });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     console.error('[createChannel] failed:', res.status, err);
@@ -1961,7 +2061,8 @@ function initInviteHandlers() {
   document.getElementById('inviteBtn')?.addEventListener('click', () => {
     if (activeType !== 'channel') return;
     const ch = channels.find(c => c.id === activeId);
-    document.getElementById('inviteChannelName').textContent = ch?.name || '';
+    const srv = servers.find(s => s.id === activeServerId);
+    document.getElementById('inviteChannelName').textContent = srv?.name || ch?.name || '';
     document.getElementById('inviteOverlay').classList.remove('hidden');
     document.getElementById('inviteCopyWrap').classList.add('hidden');
     document.getElementById('inviteExpiry').value   = '';
@@ -1982,7 +2083,7 @@ function initInviteHandlers() {
 async function generateInvite() {
   const expiry  = document.getElementById('inviteExpiry').value;
   const maxUses = parseInt(document.getElementById('inviteMaxUses').value) || null;
-  const body    = { channel_id: activeId };
+  const body    = { server_id: activeServerId, channel_id: activeType === 'channel' ? activeId : null };
   if (expiry)   body.expires_hours = parseInt(expiry);
   if (maxUses)  body.max_uses = maxUses;
   const res = await authFetch('/invite', 'POST', body);
@@ -2001,12 +2102,24 @@ async function redeemPendingInvite() {
     const res = await authFetch(`/invite/${encodeURIComponent(code)}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { showToast(data.detail || 'Invite link is invalid', 'error'); return false; }
-    if (!data.channel_id) { showToast('Invite accepted 🎉'); return false; }
+    if (data.server_id) {
+      await loadServers();
+      activeServerId = data.server_id;
+      localStorage.setItem('synctact_server', data.server_id);
+      renderServerRail();
+      await loadChannels();
+    }
+    const srvName = data.server?.name;
+    if (!data.channel_id) {
+      if (channels.length) openChannel(channels[0]);
+      showToast(srvName ? `${data.joined ? 'Joined' : 'Opened'} ${srvName} 🎉` : 'Invite accepted 🎉');
+      return !!data.server_id;
+    }
     let ch = channels.find(c => c.id === data.channel_id);
     if (!ch) { await loadChannels(); ch = channels.find(c => c.id === data.channel_id); }
     if (!ch) { showToast('That channel no longer exists', 'error'); return false; }
     openChannel(ch);
-    showToast(`Joined #${ch.name} via invite 🎉`);
+    showToast(data.joined && srvName ? `Joined ${srvName} 🎉` : `Opened #${ch.name}`);
     return true;
   } catch (e) {
     console.warn('[invite]', e);

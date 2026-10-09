@@ -142,6 +142,7 @@ class Channel(SQLModel, table=True):
     readonly:         bool          = Field(default=False)   # only mods/admins can post
     archived:         bool          = Field(default=False)   # soft-archived
     channel_type:     str           = Field(default='text')  # text | moodboard
+    server_id:        Optional[int] = Field(default=None, index=True)
     created_at:       datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -238,10 +239,28 @@ class ChannelCategoryLink(SQLModel, table=True):
     channel_id:  int           = Field(index=True)
 
 
+class ChatServer(SQLModel, table=True):
+    """A Discord-style server. is_home is the shared one everyone belongs to."""
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    name:       str
+    owner_id:   int           = Field(default=0)
+    is_home:    bool          = Field(default=False)
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ServerMember(SQLModel, table=True):
+    id:        Optional[int] = Field(default=None, primary_key=True)
+    server_id: int           = Field(index=True)
+    user_id:   int           = Field(index=True)
+    role:      str           = Field(default="member")   # 'owner' | 'member'
+    joined_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class InviteLink(SQLModel, table=True):
     id:         Optional[int]      = Field(default=None, primary_key=True)
     code:       str                = Field(index=True, unique=True)
     channel_id: Optional[int]      = Field(default=None)   # None = server-wide invite
+    server_id:  Optional[int]      = Field(default=None, index=True)
     created_by: int
     uses:       int                = Field(default=0)
     max_uses:   Optional[int]      = Field(default=None)   # None = unlimited
@@ -457,9 +476,15 @@ def migrate_db():
                 ('readonly',         'ALTER TABLE channel ADD COLUMN readonly BOOLEAN DEFAULT FALSE'),
                 ('archived',         'ALTER TABLE channel ADD COLUMN archived BOOLEAN DEFAULT FALSE'),
                 ('channel_type',      "ALTER TABLE channel ADD COLUMN channel_type VARCHAR DEFAULT 'text'"),
+                ('server_id',         'ALTER TABLE channel ADD COLUMN server_id INTEGER DEFAULT NULL'),
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(_ddl(ddl)))
+        if 'invitelink' in tables:
+            existing = {c['name'] for c in insp.get_columns('invitelink')}
+            if 'server_id' not in existing:
+                conn.execute(sqlalchemy.text(_ddl(
+                    'ALTER TABLE invitelink ADD COLUMN server_id INTEGER DEFAULT NULL')))
         # UserXP table is created by SQLModel create_all; no manual column migration needed
         # UserWarning table likewise created by create_all
 
@@ -771,6 +796,65 @@ def _can_view_message(user: User, cm: "ChatMessage") -> bool:
     return user.id in (cm.sender_id, cm.dm_to_user_id)
 
 
+def _server_dict(srv: "ChatServer", role: str) -> dict:
+    return {"id": srv.id, "name": srv.name, "owner_id": srv.owner_id,
+            "is_home": srv.is_home, "role": role}
+
+
+def _join_server(session: Session, server_id: int, user_id: int, role: str = "member") -> bool:
+    """Add a membership if there isn't one. Returns True when a row was added."""
+    existing = session.exec(select(ServerMember).where(
+        ServerMember.server_id == server_id, ServerMember.user_id == user_id)).first()
+    if existing:
+        return False
+    session.add(ServerMember(server_id=server_id, user_id=user_id, role=role))
+    return True
+
+
+def _is_server_member(session: Session, user_id: int, server_id: Optional[int]) -> bool:
+    """True if the user belongs to the server. The home server auto-joins any signed-in user."""
+    if not server_id:
+        return True
+    if session.exec(select(ServerMember).where(
+            ServerMember.server_id == server_id, ServerMember.user_id == user_id)).first():
+        return True
+    srv = session.get(ChatServer, server_id)
+    if srv and srv.is_home and user_id:
+        _join_server(session, server_id, user_id)
+        session.commit()
+        return True
+    return False
+
+
+def _my_server_ids(session: Session, user_id: int) -> set:
+    home = session.exec(select(ChatServer).where(ChatServer.is_home == True)).first()  # noqa: E712
+    if home:
+        _is_server_member(session, user_id, home.id)
+    return set(session.exec(select(ServerMember.server_id).where(ServerMember.user_id == user_id)).all())
+
+
+def _ensure_home_server() -> None:
+    """Put pre-existing channels into a shared home server so they aren't left ownerless."""
+    with Session(engine) as session:
+        home = session.exec(select(ChatServer).where(ChatServer.is_home == True)).first()  # noqa: E712
+        orphans = session.exec(select(Channel).where(Channel.server_id == None)).all()  # noqa: E711
+        if not home and not orphans:
+            return
+        if not home:
+            first = session.exec(select(User).where(User.role != "bot").order_by(User.id)).first()
+            home = ChatServer(name="SyncTact", owner_id=first.id if first else 0, is_home=True)
+            session.add(home)
+            session.commit()
+            session.refresh(home)
+            log.info("Created home server '%s'", home.name)
+        for ch in orphans:
+            ch.server_id = home.id
+            session.add(ch)
+        if home.owner_id:
+            _join_server(session, home.id, home.owner_id, "owner")
+        session.commit()
+
+
 def _admin_key_ok(key: Optional[str]) -> bool:
     return bool(ADMIN_KEY) and bool(key) and secrets.compare_digest(key, ADMIN_KEY)
 
@@ -931,6 +1015,7 @@ def on_startup():
                     ch.name = fix[1]
                     session.add(ch)
             session.commit()
+    _ensure_home_server()
 
 
 import asyncio as _asyncio
@@ -1024,6 +1109,7 @@ def signup(req: SignUpRequest, request: Request, session: Session = Depends(get_
     session.add(user)
     session.commit()
     session.refresh(user)
+    _my_server_ids(session, user.id)   # home server membership
     token = _create_session(session, user, request)
     log.info("New user signed up: %s (%s)", user.name, user.email)
     return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
@@ -1995,6 +2081,7 @@ class ChannelCreate(BaseModel):
     name:         str
     description:  Optional[str] = None
     channel_type: Optional[str] = 'text'  # text | moodboard
+    server_id:    Optional[int] = None
 
 
 class ScheduledCreate(BaseModel):
@@ -2007,17 +2094,26 @@ class ScheduledCreate(BaseModel):
 # -------------------------------------------------------------
 # Chat REST endpoints
 # -------------------------------------------------------------
+def _channel_dict(c: Channel) -> dict:
+    return {"id": c.id, "name": c.name, "description": c.description,
+            "created_by": c.created_by, "slowmode_seconds": c.slowmode_seconds or 0,
+            "category_id": c.category_id, "server_id": c.server_id,
+            "readonly": bool(c.readonly), "archived": bool(c.archived),
+            "channel_type": c.channel_type or 'text'}
+
+
 @app.get("/chat/channels")
 def list_channels(
+    server_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    mine = _my_server_ids(session, current_user.id)
+    if server_id is not None and server_id not in mine:
+        raise HTTPException(status_code=403, detail="You're not in that server")
     channels = session.exec(select(Channel).order_by(Channel.created_at)).all()
-    return [{"id": c.id, "name": c.name, "description": c.description,
-             "created_by": c.created_by, "slowmode_seconds": c.slowmode_seconds or 0,
-             "category_id": c.category_id,
-             "readonly": bool(c.readonly), "archived": bool(c.archived),
-             "channel_type": c.channel_type or 'text'} for c in channels]
+    return [_channel_dict(c) for c in channels
+            if c.server_id in mine and (server_id is None or c.server_id == server_id)]
 
 
 @app.post("/chat/channels", status_code=201)
@@ -2029,14 +2125,17 @@ def create_channel(
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Channel name required")
+    if not req.server_id:
+        home = session.exec(select(ChatServer).where(ChatServer.is_home == True)).first()  # noqa: E712
+        req.server_id = home.id if home else None
+    if not req.server_id or req.server_id not in _my_server_ids(session, current_user.id):
+        raise HTTPException(status_code=403, detail="Pick a server you belong to")
     ch = Channel(name=name, description=req.description, created_by=current_user.id,
-                 channel_type=req.channel_type or 'text')
+                 channel_type=req.channel_type or 'text', server_id=req.server_id)
     session.add(ch)
     session.commit()
     session.refresh(ch)
-    return {"id": ch.id, "name": ch.name, "description": ch.description,
-            "created_by": ch.created_by, "slowmode_seconds": 0, "category_id": None,
-            "channel_type": ch.channel_type or 'text'}
+    return _channel_dict(ch)
 
 
 @app.get("/chat/channels/{channel_id}/messages")
@@ -2047,6 +2146,11 @@ def channel_messages(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    ch = session.get(Channel, channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if not _is_server_member(session, current_user.id, ch.server_id):
+        raise HTTPException(status_code=403, detail="You're not in that server")
     stmt = select(ChatMessage).where(ChatMessage.channel_id == channel_id)
     if before:
         stmt = stmt.where(ChatMessage.id < before)
@@ -2930,34 +3034,115 @@ async def set_channel_category(
 
 
 # -------------------------------------------------------------
-# Invite links
+# Servers (Discord-style) and invite links
 # -------------------------------------------------------------
+class ServerCreate(BaseModel):
+    name: str
+
+
+@app.get("/servers")
+def list_servers(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ids = _my_server_ids(session, current_user.id)
+    if not ids:
+        return []
+    rows = session.exec(select(ChatServer).where(ChatServer.id.in_(list(ids))).order_by(ChatServer.id)).all()
+    roles = {m.server_id: m.role for m in session.exec(
+        select(ServerMember).where(ServerMember.user_id == current_user.id)).all()}
+    return [_server_dict(s, roles.get(s.id, "member")) for s in rows]
+
+
+@app.post("/servers", status_code=201)
+def create_server(
+    body: ServerCreate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    name = body.name.strip()[:64]
+    if not name:
+        raise HTTPException(400, "Server name required")
+    srv = ChatServer(name=name, owner_id=current_user.id, is_home=False)
+    session.add(srv)
+    session.commit()
+    session.refresh(srv)
+    _join_server(session, srv.id, current_user.id, "owner")
+    general = Channel(name="\U0001f4e3 general", description="General chat",
+                      created_by=current_user.id, server_id=srv.id)
+    session.add(general)
+    session.commit()
+    session.refresh(general)
+    log.info("Server '%s' created by %s", name, current_user.name)
+    return {**_server_dict(srv, "owner"), "channels": [_channel_dict(general)]}
+
+
+@app.post("/servers/{server_id}/leave")
+def leave_server(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    srv = session.get(ChatServer, server_id)
+    if not srv:
+        raise HTTPException(404, "Server not found")
+    if srv.is_home:
+        raise HTTPException(400, "The home server is shared by everyone")
+    mem = session.exec(select(ServerMember).where(
+        ServerMember.server_id == server_id, ServerMember.user_id == current_user.id)).first()
+    if not mem:
+        raise HTTPException(404, "You're not in that server")
+    session.delete(mem)
+    others = session.exec(select(ServerMember).where(
+        ServerMember.server_id == server_id, ServerMember.user_id != current_user.id)).all()
+    deleted = False
+    if not others:
+        for ch in session.exec(select(Channel).where(Channel.server_id == server_id)).all():
+            session.delete(ch)
+        session.delete(srv)
+        deleted = True
+    elif mem.role == "owner":
+        nxt = others[0]
+        nxt.role = "owner"
+        srv.owner_id = nxt.user_id
+        session.add(nxt)
+        session.add(srv)
+    session.commit()
+    return {"ok": True, "deleted": deleted}
+
+
 @app.post("/invite")
 async def create_invite(
-    body: dict,   # {channel_id?, max_uses?, expires_hours?}
+    body: dict,   # {server_id?, channel_id?, max_uses?, expires_hours?}
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     code       = secrets.token_urlsafe(8)
     channel_id = body.get("channel_id")
+    server_id  = body.get("server_id")
     max_uses   = body.get("max_uses")
     exp_hours  = body.get("expires_hours")
-    if channel_id is not None and not session.get(Channel, channel_id):
+    ch = session.get(Channel, channel_id) if channel_id is not None else None
+    if channel_id is not None and not ch:
         raise HTTPException(404, "Channel not found")
+    if server_id is None and ch:
+        server_id = ch.server_id
+    if not server_id or not _is_server_member(session, current_user.id, server_id):
+        raise HTTPException(403, "You can only invite people to a server you're in")
     expires_at = None
     if exp_hours:
         expires_at = datetime.now(timezone.utc) + timedelta(hours=int(exp_hours))
-    inv = InviteLink(code=code, channel_id=channel_id, created_by=current_user.id,
-                     max_uses=max_uses, expires_at=expires_at)
+    inv = InviteLink(code=code, channel_id=channel_id, server_id=server_id,
+                     created_by=current_user.id, max_uses=max_uses, expires_at=expires_at)
     session.add(inv); session.commit(); session.refresh(inv)
     return {"code": code, "url": f"/invite/{code}", "channel_id": channel_id,
-            "expires_at": expires_at.isoformat() if expires_at else None}
+            "server_id": server_id, "expires_at": expires_at.isoformat() if expires_at else None}
 
 
 @app.get("/invite/{code}")
 async def use_invite(
     code: str,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     inv = session.exec(select(InviteLink).where(InviteLink.code == code)).first()
@@ -2966,15 +3151,26 @@ async def use_invite(
     now_utc = datetime.now(timezone.utc)
     if inv.expires_at and inv.expires_at.replace(tzinfo=timezone.utc) < now_utc:
         raise HTTPException(410, "Invite has expired")
-    if inv.max_uses and inv.uses >= inv.max_uses:
-        raise HTTPException(410, "Invite has reached maximum uses")
-    inv.uses += 1
-    session.add(inv); session.commit()
     ch = session.get(Channel, inv.channel_id) if inv.channel_id else None
+    server_id = inv.server_id or (ch.server_id if ch else None)
+    already = bool(server_id and session.exec(select(ServerMember).where(
+        ServerMember.server_id == server_id, ServerMember.user_id == current_user.id)).first())
+    if not already:
+        if inv.max_uses and inv.uses >= inv.max_uses:
+            raise HTTPException(410, "Invite has reached maximum uses")
+        inv.uses += 1
+        session.add(inv)
+        if server_id:
+            _join_server(session, server_id, current_user.id)
+        session.commit()
+    srv = session.get(ChatServer, server_id) if server_id else None
     return {
         "code":       code,
         "channel_id": inv.channel_id,
         "channel":    {"id": ch.id, "name": ch.name} if ch else None,
+        "server_id":  server_id,
+        "server":     {"id": srv.id, "name": srv.name} if srv else None,
+        "joined":     not already,
         "uses":       inv.uses,
     }
 
@@ -3426,7 +3622,11 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                 if not content and not file_url:
                     continue
                 with Session(engine) as session:
-                    if not isinstance(channel_id, int) or not session.get(Channel, channel_id):
+                    ch = session.get(Channel, channel_id) if isinstance(channel_id, int) else None
+                    if not ch:
+                        continue
+                    if not _is_server_member(session, user_id, ch.server_id):
+                        await ws.send_text(json.dumps({"type": "error", "message": "Join this server before posting."}))
                         continue
                     # Kick check
                     kicked = session.exec(

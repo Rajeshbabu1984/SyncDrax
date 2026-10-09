@@ -58,8 +58,21 @@
     .workspace { display:flex; width:100%; height:100vh; }
 
     /* ── Sidebar ── */
-    .sidebar { width:260px; min-width:260px; background:var(--bg-sidebar);
-               display:flex; flex-direction:column; border-right:1px solid var(--border); overflow:hidden; }
+    .sidebar { width:332px; min-width:332px; background:var(--bg-sidebar);
+               display:flex; flex-direction:row; border-right:1px solid var(--border); overflow:hidden; }
+    .sidebar-body { flex:1; min-width:0; display:flex; flex-direction:column; }
+
+    /* Discord-style server switcher */
+    .server-rail { width:72px; flex:none; background:#1a1c1f; display:flex; flex-direction:column;
+                   align-items:center; gap:10px; padding:12px 0; overflow-y:auto; }
+    .server-rail::-webkit-scrollbar { width:0; }
+    .server-pill { width:48px; height:48px; border-radius:24px; border:none; cursor:pointer;
+                   color:#fff; font-weight:700; font-size:1.05rem; flex:none;
+                   transition:border-radius .15s, background .15s; }
+    .server-pill:hover, .server-pill.active { border-radius:16px; }
+    .server-pill.active { box-shadow:inset 0 0 0 2px #fff; }
+    .server-pill.add { background:#2b2d31; color:#23a559; font-size:1.4rem; }
+    .server-pill.add:hover { background:#23a559; color:#fff; border-radius:16px; }
 
     .ws-header { padding:16px 16px 14px; border-bottom:1px solid var(--border);
                  display:flex; align-items:center; gap:10px; }
@@ -709,7 +722,7 @@
     #sidebarOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:199; }
     @media (max-width: 720px) {
       #hamburgerBtn { display:block; }
-      .sidebar { position:fixed; left:-270px; top:0; bottom:0; z-index:200; transition:left .25s; }
+      .sidebar { position:fixed; left:-340px; top:0; bottom:0; z-index:200; transition:left .25s; }
       .sidebar.mobile-open { left:0; box-shadow:4px 0 24px rgba(0,0,0,.4); }
       #sidebarOverlay.visible { display:block; }
       .workspace { overflow:hidden; }
@@ -852,6 +865,8 @@
 
   <!-- Sidebar -->
   <aside class="sidebar" id="sidebar">
+    <nav class="server-rail" id="serverRail" aria-label="Servers"></nav>
+    <div class="sidebar-body">
     <div class="ws-header">
       <button id="hamburgerBtn" title="Toggle sidebar"><i class="fa-solid fa-bars"></i></button>
       <div class="ws-logo"><img src="images/logo.png" alt="SyncTact" style="height:28px;width:auto;"> <span>SyncTact</span></div>
@@ -863,8 +878,11 @@
       <!-- Channels -->
       <div class="sidebar-section">
         <div class="section-header">
-          <span>Channels</span>
-          <button class="btn-add" id="addChannelBtn" title="New channel">+</button>
+          <span id="channelSectionLabel">Channels</span>
+          <span>
+            <button class="btn-add" id="leaveServerBtn" title="Leave this server" style="display:none">↩</button>
+            <button class="btn-add" id="addChannelBtn" title="New channel">+</button>
+          </span>
         </div>
         <ul class="channel-list" id="channelList"></ul>
       </div>
@@ -914,6 +932,7 @@
         <option value="offline">⚫ Offline</option>
       </select>
       <button class="ia-btn" id="settingsBtn" title="Settings" style="padding:4px 7px;"><i class="fa-solid fa-gear"></i></button>
+    </div>
     </div>
   </aside>
 
@@ -1262,11 +1281,25 @@
   </div>
 </div>
 
+<!-- Create server modal -->
+<div class="overlay hidden" id="createServerOverlay">
+  <div class="modal-card" style="width:380px;">
+    <h3>Create a server</h3>
+    <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:6px;">A server is your own space, with its own channels. Invite friends to join it.</p>
+    <label>Server name</label>
+    <input class="modal-input" id="serverNameInput" maxlength="64" placeholder="e.g. Friday game night" />
+    <div class="modal-row" style="margin-top:20px;">
+      <button class="modal-btn secondary" id="cancelServerBtn">Cancel</button>
+      <button class="modal-btn primary" id="createServerBtn">Create</button>
+    </div>
+  </div>
+</div>
+
 <!-- Invite link modal -->
 <div class="overlay hidden" id="inviteOverlay">
   <div class="modal-card" style="width:420px;">
-    <h3>🔗 Invite to Channel</h3>
-    <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:6px;">Share this link to let others join <strong id="inviteChannelName"></strong>.</p>
+    <h3>Invite friends</h3>
+    <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:6px;">Anyone with this link can join <strong id="inviteChannelName"></strong>.</p>
     <label>Expires after (optional)</label>
     <select class="modal-input" id="inviteExpiry">
       <option value="">Never</option>
