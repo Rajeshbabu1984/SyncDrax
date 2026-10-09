@@ -791,7 +791,7 @@ async function loadMessages(type, id) {
   if (!stillActive) return;
   messagesWrap.innerHTML = '';
   if (!msgs.length) {
-    messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">No messages yet. Say hello! 👋</div>';
+    messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">No messages yet. Say hello! 👋</div>';
     return;
   }
   msgs.forEach(m => appendMessage(m, true));
@@ -800,6 +800,7 @@ async function loadMessages(type, id) {
 
 function appendMessage(m, initial) {
   const wrap = messagesWrap;
+  wrap.querySelector('.empty-msgs')?.remove();
   // Mood board: render as image card instead of normal message
   if (wrap.classList.contains('moodboard-grid')) {
     const card = renderMoodBoardMessage(m);
