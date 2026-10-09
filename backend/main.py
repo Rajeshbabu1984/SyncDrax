@@ -44,7 +44,7 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status, UploadFile, File, Query, Header
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status, UploadFile, File, Query, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
@@ -52,6 +52,7 @@ from pydantic import BaseModel, EmailStr
 from starlette.websockets import WebSocketState
 
 import bcrypt as _bcrypt
+from sqlalchemy import Column, LargeBinary
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -214,7 +215,33 @@ class Bot(SQLModel, table=True):
     name:          str
     avatar:        str           = Field(default="🤖")
     webhook_token: str           = Field(index=True)
+    server_id:     Optional[int] = Field(default=None, index=True)
     created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class BotJob(SQLModel, table=True):
+    """A job a bot performs: post on a schedule, reply, run a command, or notify someone."""
+    id:               Optional[int]      = Field(default=None, primary_key=True)
+    bot_id:           int                = Field(index=True)
+    kind:             str                = Field(default="reply")  # schedule | reply | command | notify
+    channel_id:       Optional[int]      = Field(default=None)
+    trigger:          str                = Field(default="")
+    response:         str                = Field(default="")
+    interval_minutes: int                = Field(default=60)
+    notify_user_id:   Optional[int]      = Field(default=None)
+    last_run:         Optional[datetime] = Field(default=None)
+    active:           bool               = Field(default=True)
+    created_at:       datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class StoredFile(SQLModel, table=True):
+    """Uploaded bytes kept in the database, so they survive when the server disk is wiped."""
+    id:           str      = Field(primary_key=True)
+    owner_id:     int      = Field(default=0)
+    filename:     str      = Field(default="file")
+    content_type: str      = Field(default="application/octet-stream")
+    data:         bytes    = Field(sa_column=Column(LargeBinary))
+    created_at:   datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class RecurringTask(SQLModel, table=True):
@@ -498,6 +525,11 @@ def migrate_db():
             if 'icon_url' not in existing:
                 conn.execute(sqlalchemy.text(_ddl(
                     'ALTER TABLE chatserver ADD COLUMN icon_url VARCHAR DEFAULT NULL')))
+        if 'bot' in tables:
+            existing = {c['name'] for c in insp.get_columns('bot')}
+            if 'server_id' not in existing:
+                conn.execute(sqlalchemy.text(_ddl(
+                    'ALTER TABLE bot ADD COLUMN server_id INTEGER DEFAULT NULL')))
         if 'invitelink' in tables:
             existing = {c['name'] for c in insp.get_columns('invitelink')}
             if 'server_id' not in existing:
@@ -819,6 +851,16 @@ def _server_dict(srv: "ChatServer", role: str) -> dict:
             "is_home": srv.is_home, "role": role, "icon_url": srv.icon_url}
 
 
+def _server_membership(session: Session, user_id: int, server_id: int) -> Optional["ServerMember"]:
+    return session.exec(select(ServerMember).where(
+        ServerMember.server_id == server_id, ServerMember.user_id == user_id)).first()
+
+
+def _can_manage_server(session: Session, user: User, server_id: int) -> bool:
+    mem = _server_membership(session, user.id, server_id)
+    return bool(mem and mem.role in ("owner", "moderator")) or _is_staff(user)
+
+
 def _join_server(session: Session, server_id: int, user_id: int, role: str = "member") -> bool:
     """Add a membership if there isn't one. Returns True when a row was added."""
     existing = session.exec(select(ServerMember).where(
@@ -1108,6 +1150,7 @@ async def _run_scheduler():
                             _bcast.update(_open_url_fields(sess, rt.open_url, rt.url_target or "self",
                                                            rt.owner_id, rt.channel_id))
                             await _chat_broadcast(_bcast)
+                await _run_scheduled_bot_jobs(sess, now)
         except Exception as exc:
             log.warning("Scheduler error: %s", exc)
 
@@ -2292,27 +2335,62 @@ def dm_messages(
     return [_msg_dict(m) for m in msgs]
 
 
+_FILE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".pdf": "application/pdf", ".txt": "text/plain", ".zip": "application/zip",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "audio/webm",
+}
+
+
+def _store_bytes(session: Session, owner_id: int, filename: str, content: bytes) -> str:
+    ext = os.path.splitext(filename or "")[1].lower()
+    fid = secrets.token_urlsafe(16)
+    session.add(StoredFile(
+        id=fid, owner_id=owner_id, filename=(filename or "file")[:200],
+        content_type=_FILE_TYPES.get(ext, "application/octet-stream"), data=content,
+    ))
+    session.commit()
+    return f"/media/{fid}"
+
+
+def _drop_stored_file(session: Session, url: Optional[str]) -> None:
+    if not url or not url.startswith("/media/"):
+        return
+    fid = url.split("/media/", 1)[1].split("?", 1)[0]
+    row = session.get(StoredFile, fid)
+    if row:
+        session.delete(row)
+
+
+@app.get("/media/{file_id}")
+def download_file(file_id: str, session: Session = Depends(get_session)):
+    row = session.get(StoredFile, file_id)
+    if not row:
+        raise HTTPException(404, "File not found")
+    return Response(content=row.data, media_type=row.content_type,
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.post("/chat/upload")
 async def upload_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
-    import time as _time
     original = file.filename or "file"
-    ext      = os.path.splitext(original)[1].lower()
-    allowed  = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".txt", ".zip", ".mp4", ".mov"}
-    safe_ext = ext if ext in allowed else ".bin"
-    fname    = f"{current_user.id}_{int(_time.time() * 1000)}{safe_ext}"
-    dest     = os.path.join(UPLOADS_DIR, fname)
-    written  = 0
-    with open(dest, "wb") as fh:
-        while chunk := await file.read(1024 * 1024):
-            written += len(chunk)
-            if written > MAX_UPLOAD_BYTES:
-                fh.close(); os.remove(dest)
-                raise HTTPException(413, f"File must be under {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
-            fh.write(chunk)
-    return {"url": f"/uploads/{fname}", "name": original[:200]}
+    ext = os.path.splitext(original)[1].lower()
+    allowed = set(_FILE_TYPES) | {".bin"}
+    if ext not in allowed:
+        ext = ".bin"
+    chunks = []
+    written = 0
+    while chunk := await file.read(1024 * 1024):
+        written += len(chunk)
+        if written > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File must be under {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+        chunks.append(chunk)
+    url = _store_bytes(session, current_user.id, original[:200], b"".join(chunks))
+    return {"url": url, "name": original[:200]}
 
 
 @app.delete("/chat/channels/{channel_id}", status_code=200)
@@ -3045,15 +3123,12 @@ async def upload_avatar(
     ext   = os.path.splitext(file.filename or "")[1].lower() or ".png"
     if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
         raise HTTPException(400, "Avatar must be a PNG, JPEG, GIF or WebP image")
-    fname = f"av_{current_user.id}{ext}"
-    dest  = os.path.join(AVATAR_DIR, fname)
     content = await file.read()
     if len(content) > 4 * 1024 * 1024:
         raise HTTPException(400, "Avatar must be under 4 MB")
-    with open(dest, "wb") as f:
-        f.write(content)
     u = session.get(User, current_user.id)
-    u.avatar_url = f"/uploads/avatars/{fname}"
+    _drop_stored_file(session, u.avatar_url)
+    u.avatar_url = _store_bytes(session, current_user.id, f"avatar{ext}", content)
     session.add(u); session.commit()
     await _chat_broadcast({"type": "user_status", "user_id": u.id, "avatar_url": u.avatar_url})
     return {"avatar_url": u.avatar_url}
@@ -3204,14 +3279,8 @@ async def upload_server_icon(
     content = await file.read()
     if len(content) > 4 * 1024 * 1024:
         raise HTTPException(400, "Server picture must be under 4 MB")
-    for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
-        old = os.path.join(SERVER_ICON_DIR, f"srv_{server_id}{old_ext}")
-        if os.path.exists(old):
-            os.remove(old)
-    fname = f"srv_{server_id}{ext}"
-    with open(os.path.join(SERVER_ICON_DIR, fname), "wb") as f:
-        f.write(content)
-    srv.icon_url = f"/uploads/servers/{fname}?v={int(time.time())}"
+    _drop_stored_file(session, srv.icon_url)
+    srv.icon_url = _store_bytes(session, current_user.id, f"server{ext}", content)
     session.add(srv)
     session.commit()
     await _chat_broadcast({"type": "server_icon", "server_id": srv.id, "icon_url": srv.icon_url})
@@ -3225,15 +3294,104 @@ async def remove_server_icon(
     session: Session = Depends(get_session),
 ):
     srv = _owned_server(session, current_user, server_id)
-    for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
-        old = os.path.join(SERVER_ICON_DIR, f"srv_{server_id}{old_ext}")
-        if os.path.exists(old):
-            os.remove(old)
+    _drop_stored_file(session, srv.icon_url)
     srv.icon_url = None
     session.add(srv)
     session.commit()
     await _chat_broadcast({"type": "server_icon", "server_id": srv.id, "icon_url": None})
     return _server_dict(srv, "owner")
+
+
+class ServerRename(BaseModel):
+    name: str
+
+
+class MemberRoleUpdate(BaseModel):
+    role: str
+
+
+@app.patch("/servers/{server_id}")
+def rename_server(
+    server_id: int,
+    body: ServerRename,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    srv = session.get(ChatServer, server_id)
+    if not srv:
+        raise HTTPException(404, "Server not found")
+    if not _can_manage_server(session, current_user, server_id):
+        raise HTTPException(403, "Only the owner or a moderator can rename this server")
+    name = body.name.strip()[:64]
+    if not name:
+        raise HTTPException(400, "Server name required")
+    srv.name = name
+    session.add(srv)
+    session.commit()
+    mem = _server_membership(session, current_user.id, server_id)
+    return _server_dict(srv, mem.role if mem else "member")
+
+
+@app.get("/servers/{server_id}/members")
+def list_server_members(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if server_id not in _my_server_ids(session, current_user.id):
+        raise HTTPException(403, "You're not in that server")
+    rows = session.exec(select(ServerMember).where(ServerMember.server_id == server_id)).all()
+    out = []
+    for m in rows:
+        u = session.get(User, m.user_id)
+        if not u or u.role == "bot":
+            continue
+        out.append({"user_id": u.id, "name": u.name, "role": m.role, "avatar_url": u.avatar_url})
+    out.sort(key=lambda r: (0 if r["role"] == "owner" else 1 if r["role"] == "moderator" else 2, r["name"].lower()))
+    return out
+
+
+@app.patch("/servers/{server_id}/members/{user_id}")
+def set_member_role(
+    server_id: int,
+    user_id: int,
+    body: MemberRoleUpdate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    srv = session.get(ChatServer, server_id)
+    me = _server_membership(session, current_user.id, server_id)
+    if not srv or not me or me.role != "owner":
+        raise HTTPException(403, "Only the owner can change roles")
+    if body.role not in ("member", "moderator"):
+        raise HTTPException(400, "role must be member or moderator")
+    mem = _server_membership(session, user_id, server_id)
+    if not mem or mem.role == "owner":
+        raise HTTPException(404, "Member not found")
+    mem.role = body.role
+    session.add(mem)
+    session.commit()
+    return {"ok": True, "role": mem.role}
+
+
+@app.delete("/servers/{server_id}/members/{user_id}")
+def remove_member(
+    server_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _can_manage_server(session, current_user, server_id):
+        raise HTTPException(403, "Only the owner or a moderator can remove members")
+    me = _server_membership(session, current_user.id, server_id)
+    mem = _server_membership(session, user_id, server_id)
+    if not mem or mem.role == "owner":
+        raise HTTPException(404, "Member not found")
+    if me and me.role == "moderator" and mem.role == "moderator":
+        raise HTTPException(403, "Moderators can't remove other moderators")
+    session.delete(mem)
+    session.commit()
+    return {"ok": True}
 
 
 @app.post("/servers/{server_id}/leave")
@@ -3551,8 +3709,18 @@ async def syncbot_message(
 # Bot (custom webhook bots) endpoints
 # -------------------------------------------------------------
 class CreateBotRequest(BaseModel):
-    name:   str
-    avatar: str = "🤖"
+    name:      str
+    avatar:    str = "🤖"
+    server_id: Optional[int] = None
+
+
+class BotJobRequest(BaseModel):
+    kind:             str
+    channel_id:       Optional[int] = None
+    trigger:          str = ""
+    response:         str = ""
+    interval_minutes: int = 60
+    notify_user_id:   Optional[int] = None
 
 
 class WebhookPayload(BaseModel):
@@ -3574,6 +3742,7 @@ def list_bots(
             "name":          b.name,
             "avatar":        b.avatar,
             "webhook_token": b.webhook_token,
+            "server_id":     b.server_id,
             "created_at":    b.created_at.isoformat(),
         }
         for b in bots
@@ -3586,12 +3755,15 @@ def create_bot(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    if body.server_id is not None and body.server_id not in _my_server_ids(session, current_user.id):
+        raise HTTPException(403, "You're not in that server")
     token = secrets.token_urlsafe(32)
     bot = Bot(
         owner_id=current_user.id,
         name=body.name.strip()[:40],
         avatar=(body.avatar or "🤖")[:8],
         webhook_token=token,
+        server_id=body.server_id,
     )
     session.add(bot)
     session.commit()
@@ -3601,6 +3773,7 @@ def create_bot(
         "name":          bot.name,
         "avatar":        bot.avatar,
         "webhook_token": bot.webhook_token,
+        "server_id":     bot.server_id,
         "created_at":    bot.created_at.isoformat(),
     }
 
@@ -3615,6 +3788,77 @@ def delete_bot(
     if not bot or bot.owner_id != current_user.id:
         raise HTTPException(404, "Bot not found")
     session.delete(bot)
+    for job in session.exec(select(BotJob).where(BotJob.bot_id == bot_id)).all():
+        session.delete(job)
+    session.commit()
+    return {"ok": True}
+
+
+def _job_dict(job: BotJob) -> dict:
+    return {
+        "id": job.id, "bot_id": job.bot_id, "kind": job.kind, "channel_id": job.channel_id,
+        "trigger": job.trigger, "response": job.response, "interval_minutes": job.interval_minutes,
+        "notify_user_id": job.notify_user_id, "active": job.active,
+        "last_run": job.last_run.isoformat() if job.last_run else None,
+    }
+
+
+def _owned_bot(session: Session, user: User, bot_id: int) -> Bot:
+    bot = session.get(Bot, bot_id)
+    if not bot or bot.owner_id != user.id:
+        raise HTTPException(404, "Bot not found")
+    return bot
+
+
+@app.get("/bots/{bot_id}/jobs")
+def list_bot_jobs(bot_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    _owned_bot(session, current_user, bot_id)
+    jobs = session.exec(select(BotJob).where(BotJob.bot_id == bot_id)).all()
+    return [_job_dict(j) for j in jobs]
+
+
+@app.post("/bots/{bot_id}/jobs", status_code=201)
+def create_bot_job(
+    bot_id: int, body: BotJobRequest,
+    current_user: User = Depends(get_current_user), session: Session = Depends(get_session),
+):
+    bot = _owned_bot(session, current_user, bot_id)
+    kind = body.kind.strip().lower()
+    if kind not in ("schedule", "reply", "command", "notify"):
+        raise HTTPException(400, "kind must be schedule, reply, command or notify")
+    trigger = body.trigger.strip()[:80]
+    response = body.response.strip()[:2000]
+    if kind == "schedule" and (not body.channel_id or not response):
+        raise HTTPException(400, "A scheduled job needs a channel and a message")
+    if kind in ("reply", "command") and (len(trigger) < 2 or not response):
+        raise HTTPException(400, "Give a trigger of at least 2 characters and a reply")
+    if kind == "notify" and (len(trigger) < 2 or not body.notify_user_id):
+        raise HTTPException(400, "A notify job needs a trigger and a person to tell")
+    if body.channel_id:
+        ch = session.get(Channel, body.channel_id)
+        if not ch or (bot.server_id and ch.server_id != bot.server_id):
+            raise HTTPException(400, "That channel isn't in this bot's server")
+    job = BotJob(
+        bot_id=bot.id, kind=kind, channel_id=body.channel_id, trigger=trigger, response=response,
+        interval_minutes=max(1, min(body.interval_minutes or 60, 10080)),
+        notify_user_id=body.notify_user_id, last_run=datetime.now(timezone.utc) if kind == "schedule" else None,
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return _job_dict(job)
+
+
+@app.delete("/bots/{bot_id}/jobs/{job_id}")
+def delete_bot_job(
+    bot_id: int, job_id: int,
+    current_user: User = Depends(get_current_user), session: Session = Depends(get_session),
+):
+    _owned_bot(session, current_user, bot_id)
+    job = session.get(BotJob, job_id)
+    if not job or job.bot_id != bot_id:
+        raise HTTPException(404, "Job not found")
+    session.delete(job)
     session.commit()
     return {"ok": True}
 
@@ -3630,8 +3874,11 @@ async def bot_webhook(
         raise HTTPException(404, "Bot not found")
     if not body.content.strip():
         raise HTTPException(400, "content required")
-    if not body.channel_id or not session.get(Channel, body.channel_id):
+    ch = session.get(Channel, body.channel_id) if body.channel_id else None
+    if not ch:
         raise HTTPException(400, "A valid channel_id is required")
+    if bot.server_id and ch.server_id != bot.server_id:
+        raise HTTPException(403, "This bot isn't in that server")
     cm = ChatMessage(
         channel_id=body.channel_id,
         sender_id=0,
@@ -3647,6 +3894,120 @@ async def bot_webhook(
     bcast.update(_open_url_fields(session, body.open_url, body.url_target, bot.owner_id, cm.channel_id))
     await _chat_broadcast(bcast)
     return d
+
+
+class BotDmPayload(BaseModel):
+    user_id: int
+    content: str
+
+
+@app.post("/bots/webhook/{token}/dm", status_code=201)
+async def bot_notify(token: str, body: BotDmPayload, session: Session = Depends(get_session)):
+    """A bot's own code calls this to notify one person."""
+    bot = session.exec(select(Bot).where(Bot.webhook_token == token)).first()
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+    content = body.content.strip()[:2000]
+    if not content:
+        raise HTTPException(400, "content required")
+    if not session.get(User, body.user_id):
+        raise HTTPException(404, "User not found")
+    cm = ChatMessage(channel_id=None, dm_to_user_id=body.user_id, sender_id=0,
+                     sender_name=bot.name, content=content, bot_name=f"{bot.avatar} {bot.name}")
+    session.add(cm)
+    session.commit()
+    session.refresh(cm)
+    await _chat_send(body.user_id, {"type": "dm", "message": _msg_dict(cm)})
+    return {"ok": True, "id": cm.id}
+
+
+@app.get("/bots/webhook/{token}/messages")
+def bot_read_messages(
+    token: str, channel_id: int, limit: int = 20, session: Session = Depends(get_session),
+):
+    """A bot's own code calls this to read recent messages and decide what to do."""
+    bot = session.exec(select(Bot).where(Bot.webhook_token == token)).first()
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+    ch = session.get(Channel, channel_id)
+    if not ch or (bot.server_id and ch.server_id != bot.server_id):
+        raise HTTPException(403, "This bot can't read that channel")
+    rows = session.exec(
+        select(ChatMessage).where(ChatMessage.channel_id == channel_id)
+        .order_by(ChatMessage.created_at.desc()).limit(max(1, min(limit, 50)))
+    ).all()
+    return [{"id": m.id, "sender_name": m.sender_name, "content": m.content,
+             "bot_name": m.bot_name, "created_at": m.created_at.isoformat()} for m in reversed(list(rows))]
+
+
+def _fill_bot_text(text: str, sender_name: str, content: str) -> str:
+    return text.replace("{user}", sender_name).replace("{message}", content)[:2000]
+
+
+async def _post_as_bot(session: Session, bot: Bot, channel_id: Optional[int], content: str,
+                       dm_to: Optional[int] = None) -> None:
+    cm = ChatMessage(
+        channel_id=channel_id, dm_to_user_id=dm_to, sender_id=0, sender_name=bot.name,
+        content=content, bot_name=f"{bot.avatar} {bot.name}",
+    )
+    session.add(cm)
+    session.commit()
+    session.refresh(cm)
+    if channel_id:
+        await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
+    elif dm_to:
+        await _chat_send(dm_to, {"type": "dm", "message": _msg_dict(cm)})
+
+
+def _jobs_for(session: Session, channel: Optional[Channel]) -> list:
+    if not channel:
+        return []
+    bots = session.exec(select(Bot)).all()
+    bot_ids = [b.id for b in bots if b.server_id is None or b.server_id == channel.server_id]
+    if not bot_ids:
+        return []
+    jobs = session.exec(select(BotJob).where(BotJob.active == True, BotJob.bot_id.in_(bot_ids))).all()  # noqa: E712
+    return [j for j in jobs if j.channel_id is None or j.channel_id == channel.id]
+
+
+async def _handle_bot_messages(channel_id: int, sender_name: str, content: str) -> None:
+    text = (content or "").strip()
+    if not text:
+        return
+    low = text.lower()
+    with Session(engine) as session:
+        channel = session.get(Channel, channel_id)
+        jobs = _jobs_for(session, channel)
+        bots = {b.id: b for b in session.exec(select(Bot).where(Bot.id.in_([j.bot_id for j in jobs] or [0]))).all()}
+        for job in jobs:
+            bot = bots.get(job.bot_id)
+            if not bot:
+                continue
+            trigger = (job.trigger or "").strip().lower()
+            if job.kind == "command" and trigger and (low == "!" + trigger or low.startswith("!" + trigger + " ")):
+                await _post_as_bot(session, bot, channel_id, _fill_bot_text(job.response, sender_name, text))
+            elif job.kind == "reply" and trigger and trigger in low:
+                await _post_as_bot(session, bot, channel_id, _fill_bot_text(job.response, sender_name, text))
+            elif job.kind == "notify" and trigger and trigger in low and job.notify_user_id:
+                note = job.response.strip() or f"{sender_name}: {text}"
+                await _post_as_bot(session, bot, None, _fill_bot_text(note, sender_name, text), dm_to=job.notify_user_id)
+
+
+async def _run_scheduled_bot_jobs(session: Session, now: datetime) -> None:
+    jobs = session.exec(select(BotJob).where(BotJob.kind == "schedule", BotJob.active == True)).all()  # noqa: E712
+    for job in jobs:
+        if not job.channel_id or not job.response.strip():
+            continue
+        if job.last_run is not None:
+            elapsed = (now - job.last_run.replace(tzinfo=timezone.utc)).total_seconds() / 60
+            if elapsed < job.interval_minutes:
+                continue
+        bot = session.get(Bot, job.bot_id)
+        if not bot:
+            continue
+        job.last_run = now
+        session.add(job)
+        await _post_as_bot(session, bot, job.channel_id, job.response.strip()[:2000])
 
 
 def _open_url_fields(session: Session, url: Optional[str], target: str, owner_id: int, channel_id: int) -> dict:
@@ -3869,6 +4230,8 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     xp_rec.updated_at = datetime.now(timezone.utc)
                     session.add(xp_rec); session.commit()
                 await _chat_broadcast({"type": "channel_message", "message": cm_dict})
+                if content:
+                    await _handle_bot_messages(channel_id, uname, content)
                 if leveled_up:
                     await _chat_broadcast({"type": "level_up", "user_id": user_id,
                                            "user_name": uname, "level": new_level,

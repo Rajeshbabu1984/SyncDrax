@@ -881,6 +881,7 @@
         <div class="section-header">
           <span id="channelSectionLabel">Channels</span>
           <span>
+            <button class="btn-add" id="serverMembersBtn" title="Server members" style="display:none"><i class="fa-solid fa-user-group"></i></button>
             <button class="btn-add" id="serverIconBtn" title="Change server picture" style="display:none"><i class="fa-solid fa-image"></i></button>
             <button class="btn-add" id="leaveServerBtn" title="Leave this server" style="display:none">↩</button>
             <input type="file" id="serverIconInput" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
@@ -1175,6 +1176,27 @@
 
     <hr class="bots-divider" />
 
+    <div class="bots-section-title">Bot jobs</div>
+    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 8px;">A job answers people, notifies someone, or posts on a timer. Replies can use {user} and {message}. Commands are typed as !trigger.</p>
+    <div id="botJobList" style="margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <select id="jobBotSelect" class="modal-input" style="flex:1;min-width:120px;"></select>
+      <select id="jobKindSelect" class="modal-input" style="flex:1;min-width:140px;">
+        <option value="reply">Reply when a message contains…</option>
+        <option value="command">Command (!name)</option>
+        <option value="notify">Notify someone</option>
+        <option value="schedule">Post on a timer</option>
+      </select>
+      <input id="jobTriggerInput" class="modal-input" placeholder="Trigger, e.g. hello" style="flex:1;min-width:120px;" />
+      <input id="jobResponseInput" class="modal-input" placeholder="What the bot says" style="flex:2;min-width:160px;" />
+      <select id="jobChannelSelect" class="modal-input" style="flex:1;min-width:120px;"></select>
+      <select id="jobUserSelect" class="modal-input" style="flex:1;min-width:120px;"></select>
+      <input id="jobIntervalInput" class="modal-input" type="number" min="1" value="60" title="Minutes between posts" style="width:80px;" />
+      <button class="modal-btn primary" id="addBotJobBtn" style="flex:none;">Add job</button>
+    </div>
+
+    <hr class="bots-divider" />
+
     <!-- How to use -->
     <div class="bots-section-title">How to call a webhook</div>
     <div class="bot-howto">
@@ -1190,7 +1212,9 @@
       <p style="font-size:.78rem;color:var(--text-muted);margin-top:5px;">
         <b>url_target</b>: <code>"self"</code> = URL opens only in the bot owner's browser &nbsp;|
         <code>"channel"</code> = offered to everyone as a clickable link (bot owner must be the channel owner)<br/>
-        <b>open_url</b> — an https:// link to open
+        <b>open_url</b> — an https:// link to open<br/>
+        Notify someone: <code>POST /bots/webhook/TOKEN/dm</code> with <code>{"user_id": 2, "content": "Build failed"}</code><br/>
+        Read the chat: <code>GET /bots/webhook/TOKEN/messages?channel_id=1</code>
       </p>
     </div>
 
@@ -1280,6 +1304,21 @@
     <div class="modal-row" style="margin-top:20px;">
       <button class="modal-btn secondary" id="cancelMyProfileBtn">Cancel</button>
       <button class="modal-btn primary"   id="saveMyProfileBtn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Server members modal -->
+<div class="overlay hidden" id="serverMembersOverlay">
+  <div class="modal-card" style="width:440px;">
+    <h3 id="serverMembersTitle">Server</h3>
+    <div id="serverRenameRow" style="display:none;gap:8px;margin-bottom:12px;">
+      <input class="modal-input" id="serverRenameInput" maxlength="64" placeholder="Server name" style="flex:1;" />
+      <button class="modal-btn primary" id="serverRenameBtn" style="flex:none;">Rename</button>
+    </div>
+    <div id="serverMembersList" style="max-height:320px;overflow:auto;"></div>
+    <div class="modal-row" style="margin-top:16px;">
+      <button class="modal-btn secondary" id="closeServerMembersBtn">Close</button>
     </div>
   </div>
 </div>

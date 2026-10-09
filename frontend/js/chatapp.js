@@ -673,12 +673,14 @@ function renderServerRail() {
   if (leave) leave.style.display = srv && !srv.is_home ? '' : 'none';
   const iconBtn = document.getElementById('serverIconBtn');
   if (iconBtn) iconBtn.style.display = srv && srv.role === 'owner' ? '' : 'none';
+  const membersBtn = document.getElementById('serverMembersBtn');
+  if (membersBtn) membersBtn.style.display = srv ? '' : 'none';
 }
 
 // Only our own uploaded pictures; anything else keeps the letter.
 function serverIconSrc(url) {
   url = String(url || '');
-  return url.startsWith('/uploads/') ? API + url : '';
+  return (url.startsWith('/uploads/') || url.startsWith('/media/')) ? API + url : '';
 }
 
 let pendingServerIcon = null;
@@ -771,6 +773,88 @@ document.getElementById('serverIconInput')?.addEventListener('change', async () 
     showToast('Server picture updated');
   } catch (e) { showToast(e.message, 'error'); }
 });
+document.getElementById('serverMembersBtn')?.addEventListener('click', openServerMembers);
+document.getElementById('closeServerMembersBtn')?.addEventListener('click', () =>
+  document.getElementById('serverMembersOverlay').classList.add('hidden'));
+document.getElementById('serverRenameBtn')?.addEventListener('click', renameActiveServer);
+
+async function openServerMembers() {
+  const srv = servers.find(s => s.id === activeServerId);
+  if (!srv) return;
+  document.getElementById('serverMembersTitle').textContent = srv.name;
+  const row = document.getElementById('serverRenameRow');
+  const canRename = srv.role === 'owner' || srv.role === 'moderator';
+  row.style.display = canRename ? 'flex' : 'none';
+  document.getElementById('serverRenameInput').value = srv.name;
+  document.getElementById('serverMembersOverlay').classList.remove('hidden');
+  const list = document.getElementById('serverMembersList');
+  list.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;">Loading…</div>';
+  const res = await authFetch(`/servers/${srv.id}/members`);
+  if (!res.ok) { list.textContent = 'Could not load members'; return; }
+  const members = await res.json();
+  list.innerHTML = '';
+  members.forEach(m => {
+    const line = document.createElement('div');
+    line.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);';
+    const name = document.createElement('span');
+    name.style.flex = '1';
+    name.textContent = m.name;
+    line.appendChild(name);
+    if (srv.role === 'owner' && m.role !== 'owner') {
+      const sel = document.createElement('select');
+      sel.className = 'modal-input';
+      sel.style.width = '120px';
+      [['member', 'Member'], ['moderator', 'Moderator']].forEach(([v, label]) => {
+        const opt = document.createElement('option');
+        opt.value = v; opt.textContent = label; opt.selected = m.role === v;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', async () => {
+        const r = await authFetch(`/servers/${srv.id}/members/${m.user_id}`, 'PATCH', { role: sel.value });
+        showToast(r.ok ? `${m.name} is now ${sel.value}` : 'Could not change the role', r.ok ? '' : 'error');
+      });
+      line.appendChild(sel);
+      const kick = document.createElement('button');
+      kick.className = 'del-bot-btn';
+      kick.textContent = 'Remove';
+      kick.addEventListener('click', () => removeServerMember(srv.id, m));
+      line.appendChild(kick);
+    } else if (srv.role === 'moderator' && m.role === 'member') {
+      const kick = document.createElement('button');
+      kick.className = 'del-bot-btn';
+      kick.textContent = 'Remove';
+      kick.addEventListener('click', () => removeServerMember(srv.id, m));
+      line.appendChild(kick);
+    } else {
+      const role = document.createElement('span');
+      role.style.cssText = 'font-size:.75rem;color:var(--text-muted);';
+      role.textContent = m.role;
+      line.appendChild(role);
+    }
+    list.appendChild(line);
+  });
+}
+
+async function renameActiveServer() {
+  const name = document.getElementById('serverRenameInput').value.trim();
+  if (!name || !activeServerId) return;
+  const res = await authFetch(`/servers/${activeServerId}`, 'PATCH', { name });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not rename', 'error'); return; }
+  const srv = servers.find(s => s.id === activeServerId);
+  if (srv) srv.name = data.name;
+  renderServerRail();
+  document.getElementById('serverMembersTitle').textContent = data.name;
+  showToast('Server renamed');
+}
+
+async function removeServerMember(serverId, member) {
+  if (!confirm(`Remove ${member.name} from this server?`)) return;
+  const res = await authFetch(`/servers/${serverId}/members/${member.user_id}`, 'DELETE');
+  if (!res.ok) { showToast('Could not remove them', 'error'); return; }
+  openServerMembers();
+}
+
 document.getElementById('leaveServerBtn')?.addEventListener('click', async () => {
   const srv = servers.find(s => s.id === activeServerId);
   if (!srv || srv.is_home) return;
@@ -3008,6 +3092,7 @@ async function fetchBots() {
   if (!res.ok) { el.innerHTML = '<div style="color:#e55;font-size:.82rem;">Failed to load.</div>'; return; }
   botsData = await res.json();
   renderBotsModal();
+  loadBotJobs();
 }
 
 function renderBotsModal() {
@@ -3038,11 +3123,12 @@ function renderBotsModal() {
 window.createBotModal = async function() {
   const name = document.getElementById('botNameInputModal').value.trim();
   if (!name) { showToast('Enter a bot name'); return; }
-  const res = await authFetch('/bots', 'POST', { name, avatar: selectedBotAvatar });
+  const res = await authFetch('/bots', 'POST', { name, avatar: selectedBotAvatar, server_id: activeServerId });
   if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.detail || 'Create failed'); return; }
   const bot = await res.json();
   botsData.push(bot);
   renderBotsModal();
+  loadBotJobs();
   document.getElementById('botNameInputModal').value = '';
   showToast(`✅ Bot “${bot.name}” created!`);
 };
@@ -3055,6 +3141,67 @@ window.deleteBotModal = async function(id) {
   renderBotsModal();
   showToast('Bot deleted');
 };
+
+function fillBotJobSelects() {
+  const botSel = document.getElementById('jobBotSelect');
+  const chSel = document.getElementById('jobChannelSelect');
+  const userSel = document.getElementById('jobUserSelect');
+  if (!botSel) return;
+  botSel.innerHTML = botsData.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('')
+    || '<option value="">Create a bot first</option>';
+  if (chSel) chSel.innerHTML = channels.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if (userSel) userSel.innerHTML = '<option value="">Person to notify</option>'
+    + allUsers.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+}
+
+async function loadBotJobs() {
+  fillBotJobSelects();
+  const el = document.getElementById('botJobList');
+  if (!el) return;
+  el.innerHTML = '';
+  for (const b of botsData) {
+    const res = await authFetch(`/bots/${b.id}/jobs`);
+    if (!res.ok) continue;
+    const jobs = await res.json();
+    jobs.forEach(j => {
+      const line = document.createElement('div');
+      line.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:.8rem;padding:4px 0;';
+      const label = document.createElement('span');
+      label.style.flex = '1';
+      label.textContent = `${b.name}: ${j.kind}${j.trigger ? ' · ' + j.trigger : ''}${j.kind === 'schedule' ? ' · every ' + j.interval_minutes + 'm' : ''}`;
+      const del = document.createElement('button');
+      del.className = 'del-bot-btn';
+      del.textContent = 'Remove';
+      del.addEventListener('click', async () => {
+        await authFetch(`/bots/${b.id}/jobs/${j.id}`, 'DELETE');
+        loadBotJobs();
+      });
+      line.append(label, del);
+      el.appendChild(line);
+    });
+  }
+  if (!el.children.length) el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;">No jobs yet.</div>';
+}
+
+document.getElementById('addBotJobBtn')?.addEventListener('click', async () => {
+  const botId = document.getElementById('jobBotSelect').value;
+  if (!botId) { showToast('Create a bot first'); return; }
+  const body = {
+    kind: document.getElementById('jobKindSelect').value,
+    trigger: document.getElementById('jobTriggerInput').value.trim(),
+    response: document.getElementById('jobResponseInput').value.trim(),
+    channel_id: Number(document.getElementById('jobChannelSelect').value) || null,
+    interval_minutes: Number(document.getElementById('jobIntervalInput').value) || 60,
+    notify_user_id: Number(document.getElementById('jobUserSelect').value) || null,
+  };
+  const res = await authFetch(`/bots/${botId}/jobs`, 'POST', body);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not add the job', 'error'); return; }
+  document.getElementById('jobTriggerInput').value = '';
+  document.getElementById('jobResponseInput').value = '';
+  showToast('Job added');
+  loadBotJobs();
+});
 
 window.copyBotWebhook = function(url, btn) {
   navigator.clipboard.writeText(url).then(() => {
