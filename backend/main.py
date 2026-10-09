@@ -83,7 +83,14 @@ SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
 FROM_EMAIL     = os.getenv("FROM_EMAIL") or SMTP_USER or ("onboarding@resend.dev" if RESEND_API_KEY else "")
 FROM_NAME      = os.getenv("FROM_NAME", "SyncTact")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synctact.db")
+# On Render's free plan the local disk is wiped on every deploy/restart, so production needs
+# DATABASE_URL pointing at a hosted Postgres (Neon, Supabase, Render Postgres, ...).
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or "sqlite:///./synctact.db"
+# Hosts hand out postgres:// URLs; SQLAlchemy needs a dialect name, and 2.1+ defaults to psycopg 3
+# while requirements.txt installs psycopg2.
+for _prefix in ("postgres://", "postgresql://"):
+    if DATABASE_URL.startswith(_prefix):
+        DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len(_prefix):]
 UPLOADS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -101,7 +108,8 @@ MAX_PEERS_PER_ROOM = 30
 # -------------------------------------------------------------
 # SQLite needs check_same_thread=False; Postgres does not take that arg
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, echo=False, connect_args=_connect_args)
+# pre_ping: hosted Postgres closes idle connections (and Neon suspends idle databases)
+engine = create_engine(DATABASE_URL, echo=False, connect_args=_connect_args, pool_pre_ping=True)
 
 
 class User(SQLModel, table=True):
@@ -402,6 +410,14 @@ def migrate_db():
     import sqlalchemy
     insp = sqlalchemy.inspect(engine)
     tables = insp.get_table_names()
+    quote = engine.dialect.identifier_preparer.quote   # "user" is a reserved word in Postgres
+
+    def _ddl(ddl: str) -> str:
+        _, _, table, rest = ddl.split(" ", 3)            # "ALTER TABLE <table> ADD COLUMN ..."
+        if engine.dialect.name != "sqlite":
+            rest = rest.replace(" DATETIME ", " TIMESTAMP ")
+        return f"ALTER TABLE {quote(table)} {rest}"
+
     with engine.begin() as conn:
         if 'chatmessage' in tables:
             existing = {c['name'] for c in insp.get_columns('chatmessage')}
@@ -414,7 +430,7 @@ def migrate_db():
                 ('forwarded_from', 'ALTER TABLE chatmessage ADD COLUMN forwarded_from INTEGER DEFAULT NULL'),
             ]:
                 if col not in existing:
-                    conn.execute(sqlalchemy.text(ddl))
+                    conn.execute(sqlalchemy.text(_ddl(ddl)))
         if 'user' in tables:
             existing = {c['name'] for c in insp.get_columns('user')}
             for col, ddl in [
@@ -429,7 +445,7 @@ def migrate_db():
                 ('title',        'ALTER TABLE user ADD COLUMN title VARCHAR DEFAULT NULL'),
             ]:
                 if col not in existing:
-                    conn.execute(sqlalchemy.text(ddl))
+                    conn.execute(sqlalchemy.text(_ddl(ddl)))
         if 'channel' in tables:
             existing = {c['name'] for c in insp.get_columns('channel')}
             for col, ddl in [
@@ -441,7 +457,7 @@ def migrate_db():
                 ('channel_type',      "ALTER TABLE channel ADD COLUMN channel_type VARCHAR DEFAULT 'text'"),
             ]:
                 if col not in existing:
-                    conn.execute(sqlalchemy.text(ddl))
+                    conn.execute(sqlalchemy.text(_ddl(ddl)))
         # UserXP table is created by SQLModel create_all; no manual column migration needed
         # UserWarning table likewise created by create_all
 
@@ -851,6 +867,10 @@ def on_startup():
         log.warning("SECRET_KEY is not set: using a random key, so all sessions end when the server restarts")
     if not ADMIN_KEY:
         log.warning("ADMIN_KEY is not set: admin-key endpoints are disabled")
+    if engine.dialect.name == "sqlite" and os.getenv("RENDER"):
+        log.warning("DATABASE_URL is not set: using a local SQLite file, which Render erases on every "
+                    "deploy and restart (all users, channels and messages are lost). Set DATABASE_URL to a Postgres database.")
+    log.info("Database: %s", engine.dialect.name)
     if email_provider():
         log.info("Email delivery: %s (from %s)", email_provider(), FROM_EMAIL)
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)

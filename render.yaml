@@ -15,6 +15,10 @@ services:
         generateValue: true
       - key: ADMIN_KEY
         sync: false   # set this manually in Render dashboard
+      # REQUIRED for data to survive: a Postgres connection string (e.g. from neon.tech or supabase.com).
+      # Without it the backend uses a SQLite file that Render erases on every deploy and restart.
+      - key: DATABASE_URL
+        sync: false
       # Optional, only for the daily digest email. Set ONE of BREVO_API_KEY or RESEND_API_KEY, plus FROM_EMAIL.
       # Free Render instances block SMTP ports, so SMTP_* settings only work on paid plans.
       - key: BREVO_API_KEY
