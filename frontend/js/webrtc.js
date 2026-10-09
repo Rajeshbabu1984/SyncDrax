@@ -262,6 +262,8 @@ class SyncTactRTC {
         peer.disconnectTimer = setTimeout(() => this._recoverPeer(peerId, pc), DISCONNECT_GRACE_MS);
       } else if (state === 'failed') {
         this._recoverPeer(peerId, pc);
+      } else if (state === 'closed') {
+        this._removePeer(peerId);
       }
     };
 
@@ -284,8 +286,7 @@ class SyncTactRTC {
       }
     }
     if (!peer.isOfferer && !peer.restarted) { peer.restarted = true; return; }  // wait for the offerer to restart
-    this._closePeerConnection(peer);
-    this.onPeerLeft(peerId);
+    this._removePeer(peerId);
   }
 
   async _createOffer(peerId, peerName) {
@@ -413,13 +414,20 @@ class SyncTactRTC {
   }
 
   /* =========== DISCONNECT =========== */
-  disconnect() {
+  disconnect({ keepMedia = false } = {}) {
     this._disconnecting = true;
     this.peers.forEach(peer => this._closePeerConnection(peer));
     this.peers.clear();
-    if (this.localStream) this.localStream.getTracks().forEach(t => t.stop());
-    if (this.screenStream) this.screenStream.getTracks().forEach(t => t.stop());
-    if (this.ws) this.ws.close();
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(t => t.stop());
+      this.screenStream = null;
+    }
+    if (!keepMedia && this.localStream) this.localStream.getTracks().forEach(t => t.stop());
+    if (this.ws) {
+      const ws = this.ws;
+      this.ws = null;
+      ws.close();
+    }
   }
 }
 

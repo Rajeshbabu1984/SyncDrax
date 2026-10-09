@@ -104,6 +104,7 @@
   let chatOpen      = false;
   let bgEngineLocal = null;
   let rtc           = null;
+  let startCall     = () => {};
   let displayName   = 'Guest';
   let startTime     = null;
   let timerInterval = null;
@@ -346,7 +347,8 @@
       meetingTimerEl.textContent = `${m}:${ss}`;
     }, 1000);
 
-    // Init RTC
+    // Init RTC. Kept as a function so "Stay" can join the room again after a hang-up.
+    startCall = () => {
     rtc = new SyncTactRTC({
       roomCode:   ROOM_CODE,
       displayName: displayName,
@@ -407,6 +409,8 @@
     rtc.connect(localStream).catch(() => {
       chat.addSystemMessage('?? Could not connect to server — using local mode');
     });
+    };
+    startCall();
 
     updateGridLayout();
     updateParticipantCount(1);
@@ -710,8 +714,22 @@
   cancelLeave.addEventListener('click', () => leaveModal.classList.add('hidden'));
   confirmLeave.addEventListener('click', () => {
     leaveModal.classList.add('hidden');
+    // Hang up now, so everyone else drops this tile instead of watching a frozen call.
+    hangUp();
     showMeetingSummary();
   });
+
+  function hangUp() {
+    if (rtc) {
+      rtc.disconnect({ keepMedia: true });
+      rtc = null;
+    }
+    peerTileMap.forEach(tile => tile.remove());
+    peerTileMap.clear();
+    document.querySelectorAll('[id^="sidebar-peer-"]').forEach(el => el.remove());
+    updateGridLayout();
+    updateParticipantCount(1);
+  }
 
   function showMeetingSummary() {
     const totalSec = Math.floor((Date.now() - (startTime || Date.now())) / 1000);
@@ -740,6 +758,7 @@
 
   sumStayBtn.addEventListener('click', () => {
     summaryOverlay.classList.add('hidden');
+    if (!rtc) startCall();
     // Re-start the timer so it's not frozen
     timerInterval = setInterval(() => {
       const s = Math.floor((Date.now() - startTime) / 1000);
