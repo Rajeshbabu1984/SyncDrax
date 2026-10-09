@@ -305,6 +305,7 @@ class ServerBan(SQLModel, table=True):
     id:        Optional[int] = Field(default=None, primary_key=True)
     server_id: int           = Field(index=True)
     user_id:   int           = Field(index=True)
+    user_name: str           = Field(default="")   # name at the time of the ban
     reason:    str           = Field(default="")
     created_at: datetime     = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -554,6 +555,11 @@ def migrate_db():
             if 'server_id' not in existing:
                 conn.execute(sqlalchemy.text(_ddl(
                     'ALTER TABLE invitelink ADD COLUMN server_id INTEGER DEFAULT NULL')))
+        if 'serverban' in tables:
+            existing = {c['name'] for c in insp.get_columns('serverban')}
+            if 'user_name' not in existing:
+                conn.execute(sqlalchemy.text(_ddl(
+                    "ALTER TABLE serverban ADD COLUMN user_name VARCHAR DEFAULT ''")))
         # UserXP table is created by SQLModel create_all; no manual column migration needed
         # UserWarning table likewise created by create_all
 
@@ -4079,6 +4085,90 @@ def _jobs_for(session: Session, channel: Optional[Channel]) -> list:
     return [j for j in jobs if j.channel_id is None or j.channel_id == channel.id]
 
 
+def _norm_person_name(name: str) -> str:
+    """Lower-case a display name, dropping a leading @ and extra spaces."""
+    text = str(name or "").replace("\u200b", "").replace("\ufeff", "")
+    text = " ".join(text.split()).strip().strip("\"'").strip()
+    if text.startswith("@"):
+        text = text[1:].strip()
+    return text.strip(".,!?:;").casefold()
+
+
+def _person_labels(user, extra) -> list:
+    labels = []
+    if user is not None and getattr(user, "name", None):
+        labels.append(user.name)
+    stored = getattr(extra, "user_name", None) if extra is not None else None
+    if stored:
+        labels.append(str(stored))
+    return labels
+
+
+def _match_named(query: str, people: list):
+    """Pick one (user, extra) pair.
+
+    Accepts an @mention, different capitalization, the first word of a longer
+    name, or a name with a reason after it. Returns (pair, None), or (None, message).
+    The message is None when nobody matches.
+    """
+    want = _norm_person_name(query)
+    if not want:
+        return None, "Say who you mean."
+
+    exact = []
+    name_then_rest = []
+    word_prefix = []
+    for pair in people:
+        user, extra = pair
+        keys = []
+        for label in _person_labels(user, extra):
+            key = _norm_person_name(label)
+            if key and key not in keys:
+                keys.append(key)
+        if not keys:
+            continue
+        if any(key == want for key in keys):
+            exact.append(pair)
+        elif any(want.startswith(key + " ") for key in keys):
+            longest = max(len(key) for key in keys if want.startswith(key + " "))
+            name_then_rest.append((longest, pair))
+        elif any(key.startswith(want + " ") for key in keys):
+            word_prefix.append(pair)
+
+    def _unique(pairs):
+        seen = []
+        out = []
+        for user, extra in pairs:
+            uid = getattr(user, "id", None) if user is not None else None
+            ident = uid if uid is not None else id(extra)
+            if ident in seen:
+                continue
+            seen.append(ident)
+            out.append((user, extra))
+        return out
+
+    found = _unique(exact)
+    if len(found) == 1:
+        return found[0], None
+    if len(found) > 1:
+        return None, "More than one person matches. Use the full name."
+
+    if name_then_rest:
+        best = max(length for length, _pair in name_then_rest)
+        found = _unique([pair for length, pair in name_then_rest if length == best])
+        if len(found) == 1:
+            return found[0], None
+        if len(found) > 1:
+            return None, "More than one person matches. Use the full name."
+
+    found = _unique(word_prefix)
+    if len(found) == 1:
+        return found[0], None
+    if len(found) > 1:
+        return None, "More than one person matches. Use the full name."
+    return None, None
+
+
 def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor_id: Optional[int] = None):
     """Helpers a bot script is allowed to call. Everything else is rejected."""
     memory = json.loads(bot.memory or "{}")
@@ -4115,22 +4205,25 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
         mem = _server_membership(session, actor_id, bot.server_id)
         return bool(mem and mem.role in ("owner", "moderator"))
 
-    def _named_member(name: str):
+    def _server_people():
         if not bot.server_id:
-            return None, None
-        want = str(name or "").strip().lower()
+            return []
+        people = []
         for mem in session.exec(select(ServerMember).where(ServerMember.server_id == bot.server_id)).all():
             user = session.get(User, mem.user_id)
-            if user and user.name.lower() == want:
-                return user, mem
-        return None, None
+            if user and user.role != "bot":
+                people.append((user, mem))
+        return people
 
     def warn(name, reason="No reason given"):
         if not _actor_is_mod():
             return "Only a moderator can warn people."
-        user, mem = _named_member(name)
-        if not user:
-            return "No member named " + str(name)
+        pair, err = _match_named(name, _server_people())
+        if err:
+            return err
+        if not pair:
+            return "No member named " + str(name).strip()
+        user, mem = pair
         if mem and mem.role == "owner":
             return "The owner can't be warned this way."
         reason = str(reason or "No reason given")[:300]
@@ -4146,9 +4239,12 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
     def ban(name, reason="No reason given"):
         if not _actor_is_mod():
             return "Only a moderator can ban people."
-        user, mem = _named_member(name)
-        if not user or not mem:
-            return "No member named " + str(name)
+        pair, err = _match_named(name, _server_people())
+        if err:
+            return err
+        if not pair:
+            return "No member named " + str(name).strip()
+        user, mem = pair
         if mem.role == "owner":
             return "The owner can't be banned."
         if user.id == actor_id:
@@ -4159,29 +4255,37 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
                 return "Only the owner can ban a moderator."
         reason = str(reason or "No reason given")[:300]
         session.delete(mem)
-        session.add(ServerBan(server_id=bot.server_id, user_id=user.id, reason=reason))
+        session.add(ServerBan(
+            server_id=bot.server_id, user_id=user.id, user_name=user.name[:64], reason=reason))
         session.commit()
         return user.name + " has been banned."
 
     def unban(name):
         if not _actor_is_mod():
             return "Only a moderator can unban people."
-        want = str(name or "").strip().lower()
-        user = session.exec(select(User).where(User.name == str(name).strip())).first()
-        if not user:
-            for u in session.exec(select(User)).all():
-                if u.name.lower() == want:
-                    user = u
-                    break
-        if not user:
-            return "No one named " + str(name)
-        row = session.exec(select(ServerBan).where(
-            ServerBan.server_id == bot.server_id, ServerBan.user_id == user.id)).first()
-        if not row:
-            return user.name + " is not banned."
-        session.delete(row)
+        if not bot.server_id:
+            return "This bot is not in a server."
+        rows = session.exec(select(ServerBan).where(ServerBan.server_id == bot.server_id)).all()
+        people = [(session.get(User, row.user_id), row) for row in rows]
+        pair, err = _match_named(name, people)
+        if err:
+            return err
+        if not pair:
+            if not people:
+                return "Nobody is banned from this server."
+            names = []
+            for user, row in people:
+                label = user.name if user is not None else (row.user_name or "someone")
+                if label not in names:
+                    names.append(label)
+            return "No banned person matches " + str(name).strip() + ". Banned: " + ", ".join(names[:8])
+        user, row = pair
+        for extra in session.exec(select(ServerBan).where(
+                ServerBan.server_id == bot.server_id, ServerBan.user_id == row.user_id)).all():
+            session.delete(extra)
         session.commit()
-        return user.name + " has been unbanned."
+        label = user.name if user is not None else (row.user_name or "They")
+        return label + " has been unbanned."
 
     def members():
         if not bot.server_id:
