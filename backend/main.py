@@ -52,6 +52,7 @@ from pydantic import BaseModel, EmailStr
 from starlette.websockets import WebSocketState
 
 import bcrypt as _bcrypt
+import botcode
 from sqlalchemy import Column, LargeBinary
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from jose import JWTError, jwt
@@ -216,6 +217,9 @@ class Bot(SQLModel, table=True):
     avatar:        str           = Field(default="🤖")
     webhook_token: str           = Field(index=True)
     server_id:     Optional[int] = Field(default=None, index=True)
+    home_channel_id: Optional[int] = Field(default=None)
+    script:        str           = Field(default="")
+    script_timers: str           = Field(default="{}")
     created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -527,9 +531,14 @@ def migrate_db():
                     'ALTER TABLE chatserver ADD COLUMN icon_url VARCHAR DEFAULT NULL')))
         if 'bot' in tables:
             existing = {c['name'] for c in insp.get_columns('bot')}
-            if 'server_id' not in existing:
-                conn.execute(sqlalchemy.text(_ddl(
-                    'ALTER TABLE bot ADD COLUMN server_id INTEGER DEFAULT NULL')))
+            for col, ddl in [
+                ('server_id', 'ALTER TABLE bot ADD COLUMN server_id INTEGER DEFAULT NULL'),
+                ('home_channel_id', 'ALTER TABLE bot ADD COLUMN home_channel_id INTEGER DEFAULT NULL'),
+                ('script', "ALTER TABLE bot ADD COLUMN script TEXT DEFAULT ''"),
+                ('script_timers', "ALTER TABLE bot ADD COLUMN script_timers TEXT DEFAULT '{}'"),
+            ]:
+                if col not in existing:
+                    conn.execute(sqlalchemy.text(_ddl(ddl)))
         if 'invitelink' in tables:
             existing = {c['name'] for c in insp.get_columns('invitelink')}
             if 'server_id' not in existing:
@@ -1151,6 +1160,7 @@ async def _run_scheduler():
                                                            rt.owner_id, rt.channel_id))
                             await _chat_broadcast(_bcast)
                 await _run_scheduled_bot_jobs(sess, now)
+                await _run_scheduled_bot_scripts(sess, now)
         except Exception as exc:
             log.warning("Scheduler error: %s", exc)
 
@@ -3743,6 +3753,8 @@ def list_bots(
             "avatar":        b.avatar,
             "webhook_token": b.webhook_token,
             "server_id":     b.server_id,
+            "home_channel_id": b.home_channel_id,
+            "script":        b.script or "",
             "created_at":    b.created_at.isoformat(),
         }
         for b in bots
@@ -3774,8 +3786,47 @@ def create_bot(
         "avatar":        bot.avatar,
         "webhook_token": bot.webhook_token,
         "server_id":     bot.server_id,
+        "home_channel_id": bot.home_channel_id,
+        "script":        bot.script or "",
         "created_at":    bot.created_at.isoformat(),
     }
+
+
+class BotScriptUpdate(BaseModel):
+    script: str = ""
+    home_channel_id: Optional[int] = None
+
+
+def _can_code_bot(session: Session, user: User, bot: Bot) -> bool:
+    if bot.owner_id == user.id:
+        return True
+    return bool(bot.server_id and _can_manage_server(session, user, bot.server_id))
+
+
+@app.put("/bots/{bot_id}/script")
+def save_bot_script(
+    bot_id: int, body: BotScriptUpdate,
+    current_user: User = Depends(get_current_user), session: Session = Depends(get_session),
+):
+    bot = session.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+    if not _can_code_bot(session, current_user, bot):
+        raise HTTPException(403, "Only the server owner or a moderator can code this bot")
+    script = (body.script or "")[:8000]
+    try:
+        botcode.function_names(script)
+    except botcode.ScriptError as exc:
+        raise HTTPException(400, str(exc))
+    if body.home_channel_id:
+        ch = session.get(Channel, body.home_channel_id)
+        if not ch or (bot.server_id and ch.server_id != bot.server_id):
+            raise HTTPException(400, "Pick a channel in this bot's server")
+        bot.home_channel_id = ch.id
+    bot.script = script
+    session.add(bot)
+    session.commit()
+    return {"ok": True, "script": bot.script, "home_channel_id": bot.home_channel_id}
 
 
 @app.delete("/bots/{bot_id}")
@@ -3970,10 +4021,101 @@ def _jobs_for(session: Session, channel: Optional[Channel]) -> list:
     return [j for j in jobs if j.channel_id is None or j.channel_id == channel.id]
 
 
+def _script_actions(bot: Bot, channel_id: Optional[int], session: Session):
+    """Helpers a bot script is allowed to call. Everything else is rejected."""
+    sent = {"n": 0}
+
+    def _room():
+        sent["n"] += 1
+        if sent["n"] > 5:
+            raise botcode.ScriptError("A script can only send 5 messages at a time")
+
+    def reply(text):
+        _room()
+        return ("channel", channel_id, str(text)[:2000])
+
+    def say(text):
+        _room()
+        return ("channel", bot.home_channel_id or channel_id, str(text)[:2000])
+
+    def notify(name, text):
+        _room()
+        return ("notify", str(name)[:64], str(text)[:2000])
+
+    pending = []
+
+    def wrap(fn):
+        def inner(*args):
+            pending.append(fn(*args))
+        return inner
+
+    async def flush():
+        for kind, target, text in pending:
+            if not text or not str(text).strip():
+                continue
+            if kind == "channel" and target:
+                await _post_as_bot(session, bot, target, str(text).strip())
+            elif kind == "notify" and target:
+                user = session.exec(select(User).where(User.name == target)).first()
+                if user:
+                    await _post_as_bot(session, bot, None, str(text).strip(), dm_to=user.id)
+
+    return {"reply": wrap(reply), "say": wrap(say), "notify": wrap(notify)}, flush
+
+
+async def _run_bot_scripts(channel_id: int, sender_name: str, content: str) -> None:
+    with Session(engine) as session:
+        channel = session.get(Channel, channel_id)
+        if not channel:
+            return
+        bots = session.exec(select(Bot).where(Bot.script != "")).all()
+        for bot in bots:
+            if bot.server_id and bot.server_id != channel.server_id:
+                continue
+            helpers, flush = _script_actions(bot, channel_id, session)
+            try:
+                botcode.run_message(bot.script, botcode.Msg(content, sender_name, channel.name), helpers)
+            except botcode.ScriptError as exc:
+                log.warning("Bot %s script error: %s", bot.name, exc)
+                continue
+            await flush()
+
+
+async def _run_scheduled_bot_scripts(session: Session, now: datetime) -> None:
+    bots = session.exec(select(Bot).where(Bot.script != "")).all()
+    for bot in bots:
+        try:
+            due = botcode.scheduled_functions(bot.script)
+        except botcode.ScriptError:
+            continue
+        timers = json.loads(bot.script_timers or "{}")
+        changed = False
+        for name, minutes in due:
+            last = timers.get(name)
+            if last:
+                elapsed = (now - datetime.fromisoformat(last).replace(tzinfo=timezone.utc)).total_seconds() / 60
+                if elapsed < minutes:
+                    continue
+            helpers, flush = _script_actions(bot, bot.home_channel_id, session)
+            try:
+                botcode.run_named(bot.script, name, helpers)
+            except botcode.ScriptError as exc:
+                log.warning("Bot %s script error: %s", bot.name, exc)
+                continue
+            await flush()
+            timers[name] = now.isoformat()
+            changed = True
+        if changed:
+            bot.script_timers = json.dumps(timers)
+            session.add(bot)
+            session.commit()
+
+
 async def _handle_bot_messages(channel_id: int, sender_name: str, content: str) -> None:
     text = (content or "").strip()
     if not text:
         return
+    await _run_bot_scripts(channel_id, sender_name, text)
     low = text.lower()
     with Session(engine) as session:
         channel = session.get(Channel, channel_id)

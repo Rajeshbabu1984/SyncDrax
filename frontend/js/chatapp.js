@@ -3142,65 +3142,46 @@ window.deleteBotModal = async function(id) {
   showToast('Bot deleted');
 };
 
-function fillBotJobSelects() {
-  const botSel = document.getElementById('jobBotSelect');
-  const chSel = document.getElementById('jobChannelSelect');
-  const userSel = document.getElementById('jobUserSelect');
-  if (!botSel) return;
-  botSel.innerHTML = botsData.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('')
+function showBotScript() {
+  const sel = document.getElementById('scriptBotSelect');
+  const box = document.getElementById('botScript');
+  const chSel = document.getElementById('scriptChannelSelect');
+  if (!sel || !box) return;
+  const bot = botsData.find(b => String(b.id) === sel.value);
+  box.value = bot?.script || '';
+  if (chSel && bot?.home_channel_id) chSel.value = String(bot.home_channel_id);
+}
+
+function loadBotJobs() {
+  const sel = document.getElementById('scriptBotSelect');
+  const chSel = document.getElementById('scriptChannelSelect');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = botsData.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('')
     || '<option value="">Create a bot first</option>';
-  if (chSel) chSel.innerHTML = channels.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  if (userSel) userSel.innerHTML = '<option value="">Person to notify</option>'
-    + allUsers.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
-}
-
-async function loadBotJobs() {
-  fillBotJobSelects();
-  const el = document.getElementById('botJobList');
-  if (!el) return;
-  el.innerHTML = '';
-  for (const b of botsData) {
-    const res = await authFetch(`/bots/${b.id}/jobs`);
-    if (!res.ok) continue;
-    const jobs = await res.json();
-    jobs.forEach(j => {
-      const line = document.createElement('div');
-      line.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:.8rem;padding:4px 0;';
-      const label = document.createElement('span');
-      label.style.flex = '1';
-      label.textContent = `${b.name}: ${j.kind}${j.trigger ? ' · ' + j.trigger : ''}${j.kind === 'schedule' ? ' · every ' + j.interval_minutes + 'm' : ''}`;
-      const del = document.createElement('button');
-      del.className = 'del-bot-btn';
-      del.textContent = 'Remove';
-      del.addEventListener('click', async () => {
-        await authFetch(`/bots/${b.id}/jobs/${j.id}`, 'DELETE');
-        loadBotJobs();
-      });
-      line.append(label, del);
-      el.appendChild(line);
-    });
+  if (current) sel.value = current;
+  if (chSel) {
+    chSel.innerHTML = channels.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   }
-  if (!el.children.length) el.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;">No jobs yet.</div>';
+  showBotScript();
 }
 
-document.getElementById('addBotJobBtn')?.addEventListener('click', async () => {
-  const botId = document.getElementById('jobBotSelect').value;
+document.getElementById('scriptBotSelect')?.addEventListener('change', showBotScript);
+document.getElementById('saveBotScriptBtn')?.addEventListener('click', async () => {
+  const botId = document.getElementById('scriptBotSelect').value;
   if (!botId) { showToast('Create a bot first'); return; }
-  const body = {
-    kind: document.getElementById('jobKindSelect').value,
-    trigger: document.getElementById('jobTriggerInput').value.trim(),
-    response: document.getElementById('jobResponseInput').value.trim(),
-    channel_id: Number(document.getElementById('jobChannelSelect').value) || null,
-    interval_minutes: Number(document.getElementById('jobIntervalInput').value) || 60,
-    notify_user_id: Number(document.getElementById('jobUserSelect').value) || null,
-  };
-  const res = await authFetch(`/bots/${botId}/jobs`, 'POST', body);
+  const res = await authFetch(`/bots/${botId}/script`, 'PUT', {
+    script: document.getElementById('botScript').value,
+    home_channel_id: Number(document.getElementById('scriptChannelSelect').value) || null,
+  });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { showToast(data.detail || 'Could not add the job', 'error'); return; }
-  document.getElementById('jobTriggerInput').value = '';
-  document.getElementById('jobResponseInput').value = '';
-  showToast('Job added');
-  loadBotJobs();
+  if (!res.ok) { showToast(data.detail || 'Could not save the code', 'error'); return; }
+  const bot = botsData.find(b => String(b.id) === String(botId));
+  if (bot) {
+    bot.script = data.script;
+    bot.home_channel_id = data.home_channel_id;
+  }
+  showToast('Bot code saved');
 });
 
 window.copyBotWebhook = function(url, btn) {

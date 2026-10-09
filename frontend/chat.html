@@ -1176,24 +1176,15 @@
 
     <hr class="bots-divider" />
 
-    <div class="bots-section-title">Bot jobs</div>
-    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 8px;">A job answers people, notifies someone, or posts on a timer. Replies can use {user} and {message}. Commands are typed as !trigger.</p>
-    <div id="botJobList" style="margin-bottom:8px;"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <select id="jobBotSelect" class="modal-input" style="flex:1;min-width:120px;"></select>
-      <select id="jobKindSelect" class="modal-input" style="flex:1;min-width:140px;">
-        <option value="reply">Reply when a message contains…</option>
-        <option value="command">Command (!name)</option>
-        <option value="notify">Notify someone</option>
-        <option value="schedule">Post on a timer</option>
-      </select>
-      <input id="jobTriggerInput" class="modal-input" placeholder="Trigger, e.g. hello" style="flex:1;min-width:120px;" />
-      <input id="jobResponseInput" class="modal-input" placeholder="What the bot says" style="flex:2;min-width:160px;" />
-      <select id="jobChannelSelect" class="modal-input" style="flex:1;min-width:120px;"></select>
-      <select id="jobUserSelect" class="modal-input" style="flex:1;min-width:120px;"></select>
-      <input id="jobIntervalInput" class="modal-input" type="number" min="1" value="60" title="Minutes between posts" style="width:80px;" />
-      <button class="modal-btn primary" id="addBotJobBtn" style="flex:none;">Add job</button>
+    <div class="bots-section-title">Code the bot</div>
+    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 8px;">The server owner and moderators write this on the site. It can reply, post, and notify. It cannot reach anything outside the chat.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+      <select id="scriptBotSelect" class="modal-input" style="flex:1;min-width:140px;"></select>
+      <select id="scriptChannelSelect" class="modal-input" style="flex:1;min-width:140px;" title="Channel used by say()"></select>
+      <button class="modal-btn primary" id="saveBotScriptBtn" style="flex:none;">Save code</button>
     </div>
+    <textarea id="botScript" class="modal-input" rows="14" spellcheck="false" style="width:100%;font-family:ui-monospace,monospace;font-size:.8rem;line-height:1.45;resize:vertical;" placeholder="def on_message(msg):&#10;    if &quot;hello&quot; in msg.text.lower():&#10;        reply(&quot;Hi &quot; + msg.user)&#10;    if msg.text.startswith(&quot;!ping&quot;):&#10;        reply(&quot;pong&quot;)&#10;&#10;def every_60():&#10;    say(&quot;Hourly check-in&quot;)"></textarea>
+    <p id="botScriptHint" style="font-size:.75rem;color:var(--text-muted);margin-top:6px;">reply(text) answers in the channel. say(text) posts in the channel chosen above. notify(&quot;Name&quot;, text) sends a direct message. every_60 runs every 60 minutes. msg.text, msg.user and msg.channel are the message.</p>
 
     <hr class="bots-divider" />
 
