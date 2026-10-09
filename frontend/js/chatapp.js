@@ -401,6 +401,12 @@ function handleServerMsg(msg) {
       break;
     }
 
+    case 'server_icon': {
+      const srv = servers.find(s => s.id === msg.server_id);
+      if (srv) { srv.icon_url = msg.icon_url || null; renderServerRail(); }
+      break;
+    }
+
     case 'presence': {
       if (dmUsers[msg.user_id]) {
         dmUsers[msg.user_id].online = msg.online;
@@ -638,8 +644,14 @@ function renderServerRail() {
     const b = document.createElement('button');
     b.className = 'server-pill' + (s.id === activeServerId ? ' active' : '');
     b.title = s.name + (s.is_home ? ' (everyone)' : '');
-    b.textContent = (s.name.trim().charAt(0) || '?').toUpperCase();
-    b.style.background = SERVER_COLORS[s.id % SERVER_COLORS.length];
+    const icon = serverIconSrc(s.icon_url);
+    if (icon) {
+      b.classList.add('has-icon');
+      b.style.backgroundImage = `url("${icon}")`;
+    } else {
+      b.textContent = (s.name.trim().charAt(0) || '?').toUpperCase();
+      b.style.background = SERVER_COLORS[s.id % SERVER_COLORS.length];
+    }
     b.addEventListener('click', () => selectServer(s.id));
     rail.appendChild(b);
   });
@@ -649,6 +661,7 @@ function renderServerRail() {
   add.textContent = '+';
   add.addEventListener('click', () => {
     document.getElementById('serverNameInput').value = '';
+    resetNewServerIcon();
     document.getElementById('createServerOverlay').classList.remove('hidden');
     document.getElementById('serverNameInput').focus();
   });
@@ -658,6 +671,39 @@ function renderServerRail() {
   if (label) label.textContent = srv ? srv.name : 'Channels';
   const leave = document.getElementById('leaveServerBtn');
   if (leave) leave.style.display = srv && !srv.is_home ? '' : 'none';
+  const iconBtn = document.getElementById('serverIconBtn');
+  if (iconBtn) iconBtn.style.display = srv && srv.role === 'owner' ? '' : 'none';
+}
+
+// Only our own uploaded pictures; anything else keeps the letter.
+function serverIconSrc(url) {
+  url = String(url || '');
+  return url.startsWith('/uploads/') ? API + url : '';
+}
+
+let pendingServerIcon = null;
+
+function resetNewServerIcon() {
+  pendingServerIcon = null;
+  const btn = document.getElementById('newServerIconBtn');
+  const input = document.getElementById('newServerIconInput');
+  if (input) input.value = '';
+  if (btn) { btn.style.backgroundImage = ''; btn.textContent = '+'; }
+}
+
+async function uploadServerIcon(serverId, file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(`${API}/servers/${serverId}/icon`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: fd,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Could not set the picture');
+  const srv = servers.find(s => s.id === serverId);
+  if (srv) srv.icon_url = data.icon_url;
+  return data;
 }
 
 async function selectServer(id) {
@@ -680,6 +726,11 @@ async function createServer() {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { showToast(data.detail || 'Could not create the server', 'error'); return; }
   document.getElementById('createServerOverlay').classList.add('hidden');
+  if (pendingServerIcon) {
+    try { Object.assign(data, await uploadServerIcon(data.id, pendingServerIcon)); }
+    catch (e) { showToast(e.message, 'error'); }
+    resetNewServerIcon();
+  }
   servers.push(data);
   activeServerId = data.id;
   localStorage.setItem('synctact_server', data.id);
@@ -695,6 +746,30 @@ document.getElementById('cancelServerBtn')?.addEventListener('click', () =>
 document.getElementById('createServerBtn')?.addEventListener('click', createServer);
 document.getElementById('serverNameInput')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') createServer();
+});
+document.getElementById('newServerIconBtn')?.addEventListener('click', () =>
+  document.getElementById('newServerIconInput').click());
+document.getElementById('newServerIconInput')?.addEventListener('change', () => {
+  const file = document.getElementById('newServerIconInput').files[0];
+  if (!file) return;
+  pendingServerIcon = file;
+  const btn = document.getElementById('newServerIconBtn');
+  const reader = new FileReader();
+  reader.onload = () => { btn.style.backgroundImage = `url("${reader.result}")`; btn.textContent = ''; };
+  reader.readAsDataURL(file);
+});
+document.getElementById('serverIconBtn')?.addEventListener('click', () =>
+  document.getElementById('serverIconInput').click());
+document.getElementById('serverIconInput')?.addEventListener('change', async () => {
+  const input = document.getElementById('serverIconInput');
+  const file = input.files[0];
+  input.value = '';
+  if (!file || !activeServerId) return;
+  try {
+    await uploadServerIcon(activeServerId, file);
+    renderServerRail();
+    showToast('Server picture updated');
+  } catch (e) { showToast(e.message, 'error'); }
 });
 document.getElementById('leaveServerBtn')?.addEventListener('click', async () => {
   const srv = servers.find(s => s.id === activeServerId);

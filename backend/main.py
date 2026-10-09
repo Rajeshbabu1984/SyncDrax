@@ -245,6 +245,7 @@ class ChatServer(SQLModel, table=True):
     name:       str
     owner_id:   int           = Field(default=0)
     is_home:    bool          = Field(default=False)
+    icon_url:   Optional[str] = Field(default=None)
     created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -480,6 +481,11 @@ def migrate_db():
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(_ddl(ddl)))
+        if 'chatserver' in tables:
+            existing = {c['name'] for c in insp.get_columns('chatserver')}
+            if 'icon_url' not in existing:
+                conn.execute(sqlalchemy.text(_ddl(
+                    'ALTER TABLE chatserver ADD COLUMN icon_url VARCHAR DEFAULT NULL')))
         if 'invitelink' in tables:
             existing = {c['name'] for c in insp.get_columns('invitelink')}
             if 'server_id' not in existing:
@@ -798,7 +804,7 @@ def _can_view_message(user: User, cm: "ChatMessage") -> bool:
 
 def _server_dict(srv: "ChatServer", role: str) -> dict:
     return {"id": srv.id, "name": srv.name, "owner_id": srv.owner_id,
-            "is_home": srv.is_home, "role": role}
+            "is_home": srv.is_home, "role": role, "icon_url": srv.icon_url}
 
 
 def _join_server(session: Session, server_id: int, user_id: int, role: str = "member") -> bool:
@@ -3075,6 +3081,67 @@ def create_server(
     session.refresh(general)
     log.info("Server '%s' created by %s", name, current_user.name)
     return {**_server_dict(srv, "owner"), "channels": [_channel_dict(general)]}
+
+
+def _owned_server(session: Session, user: User, server_id: int) -> ChatServer:
+    srv = session.get(ChatServer, server_id)
+    if not srv:
+        raise HTTPException(404, "Server not found")
+    mem = session.exec(select(ServerMember).where(
+        ServerMember.server_id == server_id, ServerMember.user_id == user.id)).first()
+    if not mem or mem.role != "owner":
+        raise HTTPException(403, "Only the server owner can change its picture")
+    return srv
+
+
+SERVER_ICON_DIR = os.path.join(UPLOADS_DIR, "servers")
+os.makedirs(SERVER_ICON_DIR, exist_ok=True)
+
+
+@app.post("/servers/{server_id}/icon")
+async def upload_server_icon(
+    server_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    srv = _owned_server(session, current_user, server_id)
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        raise HTTPException(400, "Server picture must be a PNG, JPEG, GIF or WebP image")
+    content = await file.read()
+    if len(content) > 4 * 1024 * 1024:
+        raise HTTPException(400, "Server picture must be under 4 MB")
+    for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        old = os.path.join(SERVER_ICON_DIR, f"srv_{server_id}{old_ext}")
+        if os.path.exists(old):
+            os.remove(old)
+    fname = f"srv_{server_id}{ext}"
+    with open(os.path.join(SERVER_ICON_DIR, fname), "wb") as f:
+        f.write(content)
+    srv.icon_url = f"/uploads/servers/{fname}?v={int(time.time())}"
+    session.add(srv)
+    session.commit()
+    await _chat_broadcast({"type": "server_icon", "server_id": srv.id, "icon_url": srv.icon_url})
+    return _server_dict(srv, "owner")
+
+
+@app.delete("/servers/{server_id}/icon")
+async def remove_server_icon(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    srv = _owned_server(session, current_user, server_id)
+    for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        old = os.path.join(SERVER_ICON_DIR, f"srv_{server_id}{old_ext}")
+        if os.path.exists(old):
+            os.remove(old)
+    srv.icon_url = None
+    session.add(srv)
+    session.commit()
+    await _chat_broadcast({"type": "server_icon", "server_id": srv.id, "icon_url": None})
+    return _server_dict(srv, "owner")
 
 
 @app.post("/servers/{server_id}/leave")

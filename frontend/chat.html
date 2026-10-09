@@ -71,6 +71,7 @@
                    transition:border-radius .15s, background .15s; }
     .server-pill:hover, .server-pill.active { border-radius:16px; }
     .server-pill.active { box-shadow:inset 0 0 0 2px #fff; }
+    .server-pill.has-icon { background-color:#2b2d31; background-size:cover; background-position:center; }
     .server-pill.add { background:#2b2d31; color:#23a559; font-size:1.4rem; }
     .server-pill.add:hover { background:#23a559; color:#fff; border-radius:16px; }
 
@@ -880,7 +881,9 @@
         <div class="section-header">
           <span id="channelSectionLabel">Channels</span>
           <span>
+            <button class="btn-add" id="serverIconBtn" title="Change server picture" style="display:none"><i class="fa-solid fa-image"></i></button>
             <button class="btn-add" id="leaveServerBtn" title="Leave this server" style="display:none">↩</button>
+            <input type="file" id="serverIconInput" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
             <button class="btn-add" id="addChannelBtn" title="New channel">+</button>
           </span>
         </div>
@@ -1286,6 +1289,11 @@
   <div class="modal-card" style="width:380px;">
     <h3>Create a server</h3>
     <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:6px;">A server is your own space, with its own channels. Invite friends to join it.</p>
+    <div style="display:flex;align-items:center;gap:12px;margin:12px 0;">
+      <button type="button" id="newServerIconBtn" title="Choose a picture" style="width:64px;height:64px;border-radius:20px;border:none;background:#5865f2;color:#fff;font-size:1.4rem;font-weight:700;cursor:pointer;background-size:cover;background-position:center;">+</button>
+      <span style="font-size:.82rem;color:var(--text-muted);">Add a picture, or leave it and we'll use the first letter.</span>
+      <input type="file" id="newServerIconInput" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+    </div>
     <label>Server name</label>
     <input class="modal-input" id="serverNameInput" maxlength="64" placeholder="e.g. Friday game night" />
     <div class="modal-row" style="margin-top:20px;">
