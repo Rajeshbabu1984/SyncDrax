@@ -1,21 +1,26 @@
 """Run a bot script written in the website.
 
-The script is ordinary Python, limited to the bot helpers (reply, say, notify)
-and the message fields. It cannot import anything, touch files, or reach the network.
+The script is ordinary Python. It can use the chat helpers and normal
+logic (if, for, while, lists, variables). It cannot import anything, touch
+files, or reach the network.
 """
 import ast
+import sys
 
 SAFE_NODES = {
     ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Expr, ast.If, ast.For,
-    ast.Compare, ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Name,
-    ast.Attribute, ast.Call, ast.Load, ast.Store, ast.Assign, ast.AugAssign,
-    ast.Return, ast.Pass, ast.And, ast.Or, ast.Not, ast.Eq, ast.NotEq, ast.Lt,
-    ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Add, ast.Sub, ast.Mult,
-    ast.Div, ast.Mod, ast.USub, ast.JoinedStr, ast.FormattedValue, ast.List,
-    ast.Tuple, ast.keyword,
+    ast.While, ast.Break, ast.Continue, ast.Compare, ast.BoolOp, ast.BinOp, ast.UnaryOp,
+    ast.Constant, ast.Name, ast.Attribute, ast.Call, ast.Load, ast.Store, ast.Assign,
+    ast.AugAssign, ast.Return, ast.Pass, ast.And, ast.Or, ast.Not, ast.Eq, ast.NotEq,
+    ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Add, ast.Sub, ast.Mult,
+    ast.Div, ast.Mod, ast.USub, ast.JoinedStr, ast.FormattedValue, ast.List, ast.Tuple,
+    ast.Dict, ast.Subscript, ast.Slice, ast.keyword,
 }
-SAFE_ATTRS = {"text", "user", "channel", "lower", "upper", "strip", "startswith", "endswith", "split"}
-SAFE_CALLS = {"reply", "say", "notify"}
+SAFE_ATTRS = {"text", "user", "channel", "lower", "upper", "strip", "startswith", "endswith", "split", "replace", "join"}
+SAFE_CALLS = {
+    "reply", "say", "say_in", "notify", "members", "channels", "recent",
+    "remember", "recall", "forget", "len", "str", "int", "range", "min", "max", "abs",
+}
 
 
 class ScriptError(Exception):
@@ -67,13 +72,31 @@ def _load(source: str, helpers: dict) -> dict:
     return locs
 
 
+def _limited(fn, *args):
+    steps = {"n": 0}
+
+    def tracer(frame, event, arg):
+        if event == "line" and frame.f_code.co_filename == "<bot>":
+            steps["n"] += 1
+            if steps["n"] > 1000:
+                raise ScriptError("Script ran too long")
+        return tracer
+
+    old = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        return fn(*args)
+    finally:
+        sys.settrace(old)
+
+
 def run_message(source: str, msg: Msg, helpers: dict) -> None:
     if not (source or "").strip() or "on_message" not in function_names(source):
         return
     locs = _load(source, helpers)
     fn = locs.get("on_message")
     if callable(fn):
-        fn(msg)
+        _limited(fn, msg)
 
 
 def scheduled_functions(source: str) -> list:
@@ -92,4 +115,4 @@ def run_named(source: str, name: str, helpers: dict) -> None:
     locs = _load(source, helpers)
     fn = locs.get(name)
     if callable(fn):
-        fn()
+        _limited(fn)

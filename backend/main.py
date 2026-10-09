@@ -220,6 +220,7 @@ class Bot(SQLModel, table=True):
     home_channel_id: Optional[int] = Field(default=None)
     script:        str           = Field(default="")
     script_timers: str           = Field(default="{}")
+    memory:        str           = Field(default="{}")
     created_at:    datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -536,6 +537,7 @@ def migrate_db():
                 ('home_channel_id', 'ALTER TABLE bot ADD COLUMN home_channel_id INTEGER DEFAULT NULL'),
                 ('script', "ALTER TABLE bot ADD COLUMN script TEXT DEFAULT ''"),
                 ('script_timers', "ALTER TABLE bot ADD COLUMN script_timers TEXT DEFAULT '{}'"),
+                ('memory', "ALTER TABLE bot ADD COLUMN memory TEXT DEFAULT '{}'"),
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(_ddl(ddl)))
@@ -3438,6 +3440,44 @@ def leave_server(
     return {"ok": True, "deleted": deleted}
 
 
+def _erase_server(session: Session, srv: ChatServer) -> None:
+    channels = session.exec(select(Channel).where(Channel.server_id == srv.id)).all()
+    channel_ids = [c.id for c in channels]
+    if channel_ids:
+        for msg in session.exec(select(ChatMessage).where(ChatMessage.channel_id.in_(channel_ids))).all():
+            session.delete(msg)
+        for ch in channels:
+            session.delete(ch)
+    for mem in session.exec(select(ServerMember).where(ServerMember.server_id == srv.id)).all():
+        session.delete(mem)
+    for inv in session.exec(select(InviteLink).where(InviteLink.server_id == srv.id)).all():
+        session.delete(inv)
+    for bot in session.exec(select(Bot).where(Bot.server_id == srv.id)).all():
+        for job in session.exec(select(BotJob).where(BotJob.bot_id == bot.id)).all():
+            session.delete(job)
+        session.delete(bot)
+    session.delete(srv)
+
+
+@app.delete("/servers/{server_id}")
+def delete_server(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    srv = session.get(ChatServer, server_id)
+    if not srv:
+        raise HTTPException(404, "Server not found")
+    if srv.is_home:
+        raise HTTPException(400, "The home server is shared by everyone")
+    mem = _server_membership(session, current_user.id, server_id)
+    if not mem or mem.role != "owner":
+        raise HTTPException(403, "Only the owner can delete this server")
+    _erase_server(session, srv)
+    session.commit()
+    return {"ok": True}
+
+
 @app.post("/invite")
 async def create_invite(
     body: dict,   # {server_id?, channel_id?, max_uses?, expires_hours?}
@@ -4023,44 +4063,111 @@ def _jobs_for(session: Session, channel: Optional[Channel]) -> list:
 
 def _script_actions(bot: Bot, channel_id: Optional[int], session: Session):
     """Helpers a bot script is allowed to call. Everything else is rejected."""
+    memory = json.loads(bot.memory or "{}")
+    if not isinstance(memory, dict):
+        memory = {}
+    dirty = {"v": False}
     sent = {"n": 0}
-
-    def _room():
-        sent["n"] += 1
-        if sent["n"] > 5:
-            raise botcode.ScriptError("A script can only send 5 messages at a time")
-
-    def reply(text):
-        _room()
-        return ("channel", channel_id, str(text)[:2000])
-
-    def say(text):
-        _room()
-        return ("channel", bot.home_channel_id or channel_id, str(text)[:2000])
-
-    def notify(name, text):
-        _room()
-        return ("notify", str(name)[:64], str(text)[:2000])
-
     pending = []
 
-    def wrap(fn):
-        def inner(*args):
-            pending.append(fn(*args))
-        return inner
+    def _cap():
+        sent["n"] += 1
+        if sent["n"] > 8:
+            raise botcode.ScriptError("A script can only send 8 messages at a time")
+
+    def reply(text):
+        _cap()
+        pending.append(("channel", channel_id, str(text)[:2000]))
+
+    def say(text):
+        _cap()
+        pending.append(("channel", bot.home_channel_id or channel_id, str(text)[:2000]))
+
+    def say_in(channel_name, text):
+        _cap()
+        pending.append(("named", str(channel_name)[:80], str(text)[:2000]))
+
+    def notify(name, text):
+        _cap()
+        pending.append(("notify", str(name)[:64], str(text)[:2000]))
+
+    def members():
+        if not bot.server_id:
+            return []
+        rows = session.exec(select(ServerMember).where(ServerMember.server_id == bot.server_id)).all()
+        names = []
+        for m in rows:
+            u = session.get(User, m.user_id)
+            if u and u.role != "bot":
+                names.append(u.name)
+        return names
+
+    def channels():
+        if not bot.server_id:
+            return []
+        return [c.name for c in session.exec(select(Channel).where(Channel.server_id == bot.server_id)).all()]
+
+    def recent(n=10):
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            n = 10
+        n = max(1, min(n, 20))
+        cid = channel_id or bot.home_channel_id
+        if not cid:
+            return []
+        rows = session.exec(
+            select(ChatMessage).where(ChatMessage.channel_id == cid)
+            .order_by(ChatMessage.created_at.desc()).limit(n)
+        ).all()
+        return [botcode.Msg(m.content or "", m.sender_name, "") for m in reversed(list(rows))]
+
+    def remember(key, value):
+        if len(memory) > 50:
+            raise botcode.ScriptError("Too many remembered values")
+        memory[str(key)[:40]] = str(value)[:500]
+        dirty["v"] = True
+        return memory[str(key)[:40]]
+
+    def recall(key):
+        return memory.get(str(key)[:40], "")
+
+    def forget(key):
+        memory.pop(str(key)[:40], None)
+        dirty["v"] = True
+
+    def safe_range(*args):
+        values = range(*[int(a) for a in args])
+        if len(values) > 200:
+            raise botcode.ScriptError("range is too long")
+        return values
 
     async def flush():
+        if dirty["v"]:
+            bot.memory = json.dumps(memory)
+            session.add(bot)
+            session.commit()
         for kind, target, text in pending:
             if not text or not str(text).strip():
                 continue
             if kind == "channel" and target:
                 await _post_as_bot(session, bot, target, str(text).strip())
+            elif kind == "named" and bot.server_id:
+                found = session.exec(select(Channel).where(Channel.server_id == bot.server_id)).all()
+                match = next((c for c in found if target in (c.name or "")), None)
+                if match:
+                    await _post_as_bot(session, bot, match.id, str(text).strip())
             elif kind == "notify" and target:
                 user = session.exec(select(User).where(User.name == target)).first()
                 if user:
                     await _post_as_bot(session, bot, None, str(text).strip(), dm_to=user.id)
 
-    return {"reply": wrap(reply), "say": wrap(say), "notify": wrap(notify)}, flush
+    return {
+        "reply": reply, "say": say, "say_in": say_in, "notify": notify,
+        "members": members, "channels": channels, "recent": recent,
+        "remember": remember, "recall": recall, "forget": forget,
+        "len": len, "str": str, "int": int, "range": safe_range, "min": min, "max": max, "abs": abs,
+    }, flush
 
 
 async def _run_bot_scripts(channel_id: int, sender_name: str, content: str) -> None:

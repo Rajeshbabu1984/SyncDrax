@@ -60,6 +60,7 @@ let servers       = [];      // [{id, name, is_home, role}]
 let activeServerId = null;
 let activeType    = null;    // 'channel' | 'dm'
 let activeId      = null;    // channel id or user id
+let _msgEpoch     = 0;       // bumps whenever the open chat changes, so a slow load can't paint the previous room
 let activeDmName  = '';
 let dmUsers       = {};      // { user_id: {name, online} }
 let typingTimers  = {};      // channel/dm → timer
@@ -322,7 +323,8 @@ function handleServerMsg(msg) {
     case 'channel_message': {
       const m = msg.message;
       console.log('[chat-ws] channel_message - m.channel_id:', m.channel_id, 'activeId:', activeId, 'match:', activeId === m.channel_id);
-      if (activeType === 'channel' && activeId === m.channel_id) {
+      const inOpenServer = channels.some(c => Number(c.id) === Number(m.channel_id));
+      if (activeType === 'channel' && Number(activeId) === Number(m.channel_id) && inOpenServer) {
         const wrap = document.getElementById('messagesWrap');
         const wasAtBottom = !wrap || wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
         appendMessage(m, false);
@@ -708,16 +710,27 @@ async function uploadServerIcon(serverId, file) {
   return data;
 }
 
+function clearOpenChat() {
+  _msgEpoch++;
+  activeId = null;
+  if (messagesWrap) {
+    messagesWrap.innerHTML = '<div style="color:var(--text-muted);font-size:.8rem;padding:20px 0;">Loading…</div>';
+  }
+}
+
 async function selectServer(id) {
-  if (id === activeServerId && channels.length && channels[0]?.server_id === id) {
+  const alreadyShowing = Number(id) === Number(activeServerId)
+    && channels.some(c => Number(c.id) === Number(activeId) && Number(c.server_id) === Number(id));
+  if (alreadyShowing) {
     renderServerRail();
     return;
   }
+  clearOpenChat();
   activeServerId = id;
   localStorage.setItem('synctact_server', id);
   renderServerRail();
   await loadChannels();
-  if (channels.length) openChannel(channels[0]);
+  if (channels.length) await openChannel(channels[0]);
   else if (messagesWrap) messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">This server has no channels yet.</div>';
 }
 
@@ -734,12 +747,14 @@ async function createServer() {
     resetNewServerIcon();
   }
   servers.push(data);
+  clearOpenChat();
   activeServerId = data.id;
   localStorage.setItem('synctact_server', data.id);
   renderServerRail();
-  channels = data.channels || [];
+  await loadChannels();
+  if (!channels.length && data.channels) channels = data.channels;
   renderChannelList();
-  if (channels.length) openChannel(channels[0]);
+  if (channels.length) await openChannel(channels[0]);
   showToast(`Server "${data.name}" created. Invite your friends with the link button.`);
 }
 
@@ -776,6 +791,25 @@ document.getElementById('serverIconInput')?.addEventListener('change', async () 
 document.getElementById('serverMembersBtn')?.addEventListener('click', openServerMembers);
 document.getElementById('closeServerMembersBtn')?.addEventListener('click', () =>
   document.getElementById('serverMembersOverlay').classList.add('hidden'));
+document.getElementById('deleteServerBtn')?.addEventListener('click', deleteActiveServer);
+
+async function deleteActiveServer() {
+  const srv = servers.find(s => s.id === activeServerId);
+  if (!srv || srv.is_home || srv.role !== 'owner') return;
+  if (!confirm(`Delete "${srv.name}"? Its channels, messages and bots will be removed for everyone.`)) return;
+  const res = await authFetch(`/servers/${srv.id}`, 'DELETE');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not delete the server', 'error'); return; }
+  document.getElementById('serverMembersOverlay').classList.add('hidden');
+  servers = servers.filter(s => s.id !== srv.id);
+  clearOpenChat();
+  activeServerId = servers[0]?.id ?? null;
+  if (activeServerId) localStorage.setItem('synctact_server', activeServerId);
+  renderServerRail();
+  await loadChannels();
+  if (channels.length) await openChannel(channels[0]);
+  showToast(`Deleted ${srv.name}`);
+}
 document.getElementById('serverRenameBtn')?.addEventListener('click', renameActiveServer);
 
 async function openServerMembers() {
@@ -786,6 +820,8 @@ async function openServerMembers() {
   const canRename = srv.role === 'owner' || srv.role === 'moderator';
   row.style.display = canRename ? 'flex' : 'none';
   document.getElementById('serverRenameInput').value = srv.name;
+  const delBtn = document.getElementById('deleteServerBtn');
+  if (delBtn) delBtn.style.display = srv.role === 'owner' && !srv.is_home ? '' : 'none';
   document.getElementById('serverMembersOverlay').classList.remove('hidden');
   const list = document.getElementById('serverMembersList');
   list.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;">Loading…</div>';
@@ -1039,14 +1075,17 @@ function updateUnreadBadge(cid) {
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 async function loadMessages(type, id) {
+  const epoch = ++_msgEpoch;
   const url = type === 'channel' ? `/chat/channels/${id}/messages` : `/chat/dm/${id}/messages`;
   const res  = await authFetch(url);
-  if (!res.ok) { messagesWrap.innerHTML = ''; return; }
+  const stillHere = () => epoch === _msgEpoch && Number(activeId) === Number(id) && activeType === type;
+  if (!stillHere()) return;
+  if (!res.ok) {
+    messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">Could not load messages.</div>';
+    return;
+  }
   const msgs = await res.json();
-  // Guard: discard stale responses if the user has already switched context
-  const stillActive = (type === 'channel' && activeType === 'channel' && activeId === id)
-                   || (type === 'dm'      && activeType === 'dm'      && activeId === id);
-  if (!stillActive) return;
+  if (!stillHere()) return;
   messagesWrap.innerHTML = '';
   if (!msgs.length) {
     messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">No messages yet. Say hello! 👋</div>';
