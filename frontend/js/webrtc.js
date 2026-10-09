@@ -4,16 +4,42 @@
 
 const MAX_PARTICIPANTS = 30;
 
-// STUN only finds public addresses. Users behind symmetric NAT or strict firewalls also need a
-// TURN relay: set EXTRA_ICE_SERVERS in config.js (e.g. from Twilio, Metered or your own coturn).
-const ICE_SERVERS = {
+// STUN only finds public addresses. The backend adds a TURN relay (Metered or TURN_URLS) so calls
+// work between different networks. EXTRA_ICE_SERVERS in config.js is appended either way.
+const _FALLBACK_ICE = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    ...(typeof EXTRA_ICE_SERVERS !== 'undefined' && Array.isArray(EXTRA_ICE_SERVERS) ? EXTRA_ICE_SERVERS : []),
   ],
 };
+
+function _withExtraIce(iceServers) {
+  const extra = (typeof EXTRA_ICE_SERVERS !== 'undefined' && Array.isArray(EXTRA_ICE_SERVERS)) ? EXTRA_ICE_SERVERS : [];
+  return { iceServers: [...iceServers, ...extra] };
+}
+
+let _iceConfigPromise = null;
+function iceConfig() {
+  if (!_iceConfigPromise) _iceConfigPromise = _loadIceConfig();
+  return _iceConfigPromise;
+}
+
+async function _loadIceConfig() {
+  const base = (typeof API_BASE !== 'undefined') ? API_BASE : '';
+  if (base) {
+    try {
+      const r = await fetch(`${base}/ice-servers`);
+      const data = r.ok ? await r.json() : null;
+      if (data && Array.isArray(data.iceServers) && data.iceServers.length) {
+        return _withExtraIce(data.iceServers);
+      }
+    } catch (e) {
+      console.warn('[RTC] could not load TURN config', e);
+    }
+  }
+  return _withExtraIce(_FALLBACK_ICE.iceServers);
+}
 
 // How long a 'disconnected' peer gets to recover before we try an ICE restart / give up.
 const DISCONNECT_GRACE_MS = 8000;
@@ -59,6 +85,7 @@ class SyncTactRTC {
   /* =========== CONNECT =========== */
   connect(localStream) {
     this.localStream = localStream;
+    iceConfig();  // start fetching TURN credentials before the first peer connects
     return new Promise((resolve, reject) => this._openSocket(resolve, reject));
   }
 
@@ -200,8 +227,8 @@ class SyncTactRTC {
   }
 
   /* =========== PEER CONNECTION =========== */
-  _buildPeerConnection(peerId) {
-    const pc = new RTCPeerConnection(ICE_SERVERS);
+  async _buildPeerConnection(peerId) {
+    const pc = new RTCPeerConnection(await iceConfig());
 
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
@@ -265,7 +292,7 @@ class SyncTactRTC {
     if (this.peers.size > MAX_PARTICIPANTS - 1) return;
     const peer = this._ensurePeerEntry(peerId, peerName, false);
     this._closePeerConnection(peer);
-    const pc = this._buildPeerConnection(peerId);
+    const pc = await this._buildPeerConnection(peerId);
     peer.pc = pc;
     peer.isOfferer = true;
     peer.pendingIce = [];
@@ -284,7 +311,7 @@ class SyncTactRTC {
     if (!reuse) {
       const queued = peer.pendingIce || [];
       this._closePeerConnection(peer);
-      peer.pc = this._buildPeerConnection(fromId);
+      peer.pc = await this._buildPeerConnection(fromId);
       peer.isOfferer = false;
       peer.pendingIce = queued;
     }

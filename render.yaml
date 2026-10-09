@@ -27,6 +27,20 @@ services:
         sync: false
       - key: FROM_EMAIL
         sync: false
+      # TURN relay so video calls connect across different networks.
+      # Free: sign up at metered.ca, create a TURN credential, then set both of these
+      # (domain looks like yourapp.metered.live, from the credential's API URL).
+      - key: METERED_TURN_DOMAIN
+        sync: false
+      - key: METERED_TURN_API_KEY
+        sync: false
+      # Or your own relay instead of Metered. TURN_URLS is comma-separated.
+      - key: TURN_URLS
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
+        sync: false
 
   - type: web
     name: synctact-frontend

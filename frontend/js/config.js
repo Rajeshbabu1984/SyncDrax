@@ -17,8 +17,8 @@ const WS_BASE = _IS_LOCAL
   : 'wss://synctact-backend.onrender.com';
 
 /**
- * Extra ICE servers appended to the public STUN list in webrtc.js.
- * Calls between peers behind symmetric NAT / strict firewalls need a TURN
- * relay, e.g. { urls: 'turn:turn.example.com:3478', username: '...', credential: '...' }
+ * Optional extra ICE servers, appended to whatever /ice-servers returns.
+ * The TURN relay itself is configured on the backend (METERED_TURN_DOMAIN +
+ * METERED_TURN_API_KEY, or TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL).
  */
 const EXTRA_ICE_SERVERS = [];

@@ -85,6 +85,15 @@ SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
 FROM_EMAIL     = os.getenv("FROM_EMAIL") or SMTP_USER or ("onboarding@resend.dev" if RESEND_API_KEY else "")
 FROM_NAME      = os.getenv("FROM_NAME", "SyncTact")
 
+# Video calls between different networks need a TURN relay. Either:
+#   METERED_TURN_DOMAIN + METERED_TURN_API_KEY  (free 20 GB/month at metered.ca), or
+#   TURN_URLS (comma-separated) + TURN_USERNAME + TURN_CREDENTIAL  (Twilio, coturn, ...)
+METERED_TURN_DOMAIN  = os.getenv("METERED_TURN_DOMAIN", "").strip().removeprefix("https://").strip("/")
+METERED_TURN_API_KEY = os.getenv("METERED_TURN_API_KEY", "").strip()
+TURN_URLS            = os.getenv("TURN_URLS", "").strip()
+TURN_USERNAME        = os.getenv("TURN_USERNAME", "").strip()
+TURN_CREDENTIAL      = os.getenv("TURN_CREDENTIAL", "").strip()
+
 # On Render's free plan the local disk is wiped on every deploy/restart, so production needs
 # DATABASE_URL pointing at a hosted Postgres (Neon, Supabase, Render Postgres, ...).
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or "sqlite:///./synctact.db"
@@ -998,6 +1007,14 @@ def on_startup():
     log.info("Database: %s", engine.dialect.name)
     if email_provider():
         log.info("Email delivery: %s (from %s)", email_provider(), FROM_EMAIL)
+    if METERED_TURN_API_KEY and METERED_TURN_DOMAIN:
+        log.info("TURN relay: Metered (%s)", METERED_TURN_DOMAIN)
+    elif TURN_URLS and TURN_USERNAME and TURN_CREDENTIAL:
+        log.info("TURN relay: %s", TURN_URLS.split(",")[0].strip())
+    else:
+        log.warning("No TURN server configured: video calls only connect when both people can reach "
+                    "each other directly. Set METERED_TURN_DOMAIN and METERED_TURN_API_KEY, or TURN_URLS, "
+                    "TURN_USERNAME and TURN_CREDENTIAL.")
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
         (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
@@ -1864,6 +1881,39 @@ async def broadcast_to_room(room_code: str, payload: dict, exclude: str | None =
 
 
 # -------------------------------------------------------------
+_STUN_SERVERS = [
+    {"urls": "stun:stun.l.google.com:19302"},
+    {"urls": "stun:stun1.l.google.com:19302"},
+]
+
+
+def _static_turn_servers() -> list:
+    urls = [u.strip() for u in TURN_URLS.split(",") if u.strip()]
+    if not urls or not TURN_USERNAME or not TURN_CREDENTIAL:
+        return []
+    return [{"urls": urls if len(urls) > 1 else urls[0],
+             "username": TURN_USERNAME, "credential": TURN_CREDENTIAL}]
+
+
+@app.get("/ice-servers")
+async def ice_servers():
+    """STUN plus a TURN relay, for meeting peer connections. No login required (guests join calls)."""
+    if METERED_TURN_API_KEY and METERED_TURN_DOMAIN:
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(
+                    f"https://{METERED_TURN_DOMAIN}/api/v1/turn/credentials",
+                    params={"apiKey": METERED_TURN_API_KEY},
+                )
+            data = r.json() if r.status_code == 200 else None
+            if isinstance(data, list) and data:
+                return {"iceServers": data}
+            log.warning("Metered TURN credentials failed: HTTP %s", r.status_code)
+        except Exception as exc:
+            log.warning("Metered TURN credentials failed: %s", exc)
+    return {"iceServers": _STUN_SERVERS + _static_turn_servers()}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "rooms": len(rooms)}
