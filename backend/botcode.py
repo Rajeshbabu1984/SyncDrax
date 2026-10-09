@@ -21,7 +21,7 @@ ALLOWED_MODULES = {
 }
 
 SAFE_NODES = {
-    ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Expr, ast.If, ast.For,
+    ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Expr, ast.If, ast.IfExp, ast.For,
     ast.While, ast.Break, ast.Continue, ast.Compare, ast.BoolOp, ast.BinOp, ast.UnaryOp,
     ast.Constant, ast.Name, ast.Attribute, ast.Call, ast.Load, ast.Store, ast.Assign,
     ast.AugAssign, ast.Return, ast.Pass, ast.And, ast.Or, ast.Not, ast.Eq, ast.NotEq,
@@ -36,10 +36,11 @@ class ScriptError(Exception):
 
 
 class Msg:
-    def __init__(self, text, user, channel):
+    def __init__(self, text, user, channel, role="member"):
         self.text = str(text or "")
         self.user = str(user or "")
         self.channel = str(channel or "")
+        self.role = str(role or "member")
 
 
 def _allowed_module(name: str) -> bool:
@@ -149,6 +150,15 @@ def scheduled_functions(source: str) -> list:
         if minutes.isdigit() and 1 <= int(minutes) <= 10080:
             found.append((name, int(minutes)))
     return found
+
+
+def run_join(source: str, name: str, helpers: dict) -> None:
+    if not (source or "").strip() or "on_join" not in function_names(source):
+        return
+    locs = _load(source, helpers)
+    fn = locs.get("on_join")
+    if callable(fn):
+        _limited(fn, str(name or ""))
 
 
 def run_named(source: str, name: str, helpers: dict) -> None:

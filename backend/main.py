@@ -297,8 +297,16 @@ class ServerMember(SQLModel, table=True):
     id:        Optional[int] = Field(default=None, primary_key=True)
     server_id: int           = Field(index=True)
     user_id:   int           = Field(index=True)
-    role:      str           = Field(default="member")   # 'owner' | 'member'
+    role:      str           = Field(default="member")   # 'owner' | 'moderator' | 'member'
     joined_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ServerBan(SQLModel, table=True):
+    id:        Optional[int] = Field(default=None, primary_key=True)
+    server_id: int           = Field(index=True)
+    user_id:   int           = Field(index=True)
+    reason:    str           = Field(default="")
+    created_at: datetime     = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class InviteLink(SQLModel, table=True):
@@ -3522,6 +3530,9 @@ async def use_invite(
     server_id = inv.server_id or (ch.server_id if ch else None)
     already = bool(server_id and session.exec(select(ServerMember).where(
         ServerMember.server_id == server_id, ServerMember.user_id == current_user.id)).first())
+    if server_id and session.exec(select(ServerBan).where(
+            ServerBan.server_id == server_id, ServerBan.user_id == current_user.id)).first():
+        raise HTTPException(403, "You are banned from this server")
     if not already:
         if inv.max_uses and inv.uses >= inv.max_uses:
             raise HTTPException(410, "Invite has reached maximum uses")
@@ -3530,6 +3541,8 @@ async def use_invite(
         if server_id:
             _join_server(session, server_id, current_user.id)
         session.commit()
+        if server_id:
+            await _run_bot_joins(server_id, current_user.name)
     srv = session.get(ChatServer, server_id) if server_id else None
     return {
         "code":       code,
@@ -3785,7 +3798,11 @@ def list_bots(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    bots = session.exec(select(Bot).where(Bot.owner_id == current_user.id)).all()
+    managed = [
+        m.server_id for m in session.exec(select(ServerMember).where(ServerMember.user_id == current_user.id)).all()
+        if m.role in ("owner", "moderator")
+    ]
+    bots = session.exec(select(Bot).where(Bot.server_id.in_(managed))).all() if managed else []
     return [
         {
             "id":            b.id,
@@ -3807,8 +3824,8 @@ def create_bot(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if body.server_id is not None and body.server_id not in _my_server_ids(session, current_user.id):
-        raise HTTPException(403, "You're not in that server")
+    if not body.server_id or not _can_manage_server(session, current_user, body.server_id):
+        raise HTTPException(403, "Only the server owner or a moderator can create a bot")
     token = secrets.token_urlsafe(32)
     bot = Bot(
         owner_id=current_user.id,
@@ -3838,9 +3855,10 @@ class BotScriptUpdate(BaseModel):
 
 
 def _can_code_bot(session: Session, user: User, bot: Bot) -> bool:
-    if bot.owner_id == user.id:
-        return True
-    return bool(bot.server_id and _can_manage_server(session, user, bot.server_id))
+    """Regular members cannot create or edit bot code. Owner and moderators can."""
+    if not bot.server_id:
+        return False
+    return _can_manage_server(session, user, bot.server_id)
 
 
 @app.put("/bots/{bot_id}/script")
@@ -3852,7 +3870,7 @@ def save_bot_script(
     if not bot:
         raise HTTPException(404, "Bot not found")
     if not _can_code_bot(session, current_user, bot):
-        raise HTTPException(403, "Only the server owner or a moderator can code this bot")
+        raise HTTPException(403, "Only the server owner or a moderator can code this bot. Members cannot.")
     script = (body.script or "")[:8000]
     try:
         botcode.function_names(script)
@@ -4061,7 +4079,7 @@ def _jobs_for(session: Session, channel: Optional[Channel]) -> list:
     return [j for j in jobs if j.channel_id is None or j.channel_id == channel.id]
 
 
-def _script_actions(bot: Bot, channel_id: Optional[int], session: Session):
+def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor_id: Optional[int] = None):
     """Helpers a bot script is allowed to call. Everything else is rejected."""
     memory = json.loads(bot.memory or "{}")
     if not isinstance(memory, dict):
@@ -4090,6 +4108,80 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session):
     def notify(name, text):
         _cap()
         pending.append(("notify", str(name)[:64], str(text)[:2000]))
+
+    def _actor_is_mod():
+        if not actor_id or not bot.server_id:
+            return False
+        mem = _server_membership(session, actor_id, bot.server_id)
+        return bool(mem and mem.role in ("owner", "moderator"))
+
+    def _named_member(name: str):
+        if not bot.server_id:
+            return None, None
+        want = str(name or "").strip().lower()
+        for mem in session.exec(select(ServerMember).where(ServerMember.server_id == bot.server_id)).all():
+            user = session.get(User, mem.user_id)
+            if user and user.name.lower() == want:
+                return user, mem
+        return None, None
+
+    def warn(name, reason="No reason given"):
+        if not _actor_is_mod():
+            return "Only a moderator can warn people."
+        user, mem = _named_member(name)
+        if not user:
+            return "No member named " + str(name)
+        if mem and mem.role == "owner":
+            return "The owner can't be warned this way."
+        reason = str(reason or "No reason given")[:300]
+        actor = session.get(User, actor_id)
+        session.add(UserWarning(
+            user_id=user.id, user_name=user.name, reason=reason,
+            warned_by=actor_id or 0, warned_by_name=(actor.name if actor else bot.name),
+            channel_id=channel_id,
+        ))
+        session.commit()
+        return user.name + " has been warned: " + reason
+
+    def ban(name, reason="No reason given"):
+        if not _actor_is_mod():
+            return "Only a moderator can ban people."
+        user, mem = _named_member(name)
+        if not user or not mem:
+            return "No member named " + str(name)
+        if mem.role == "owner":
+            return "The owner can't be banned."
+        if user.id == actor_id:
+            return "You can't ban yourself."
+        if mem.role == "moderator":
+            actor_mem = _server_membership(session, actor_id, bot.server_id)
+            if not actor_mem or actor_mem.role != "owner":
+                return "Only the owner can ban a moderator."
+        reason = str(reason or "No reason given")[:300]
+        session.delete(mem)
+        session.add(ServerBan(server_id=bot.server_id, user_id=user.id, reason=reason))
+        session.commit()
+        return user.name + " has been banned."
+
+    def unban(name):
+        if not _actor_is_mod():
+            return "Only a moderator can unban people."
+        want = str(name or "").strip().lower()
+        user = session.exec(select(User).where(User.name == str(name).strip())).first()
+        if not user:
+            for u in session.exec(select(User)).all():
+                if u.name.lower() == want:
+                    user = u
+                    break
+        if not user:
+            return "No one named " + str(name)
+        row = session.exec(select(ServerBan).where(
+            ServerBan.server_id == bot.server_id, ServerBan.user_id == user.id)).first()
+        if not row:
+            return user.name + " is not banned."
+        session.delete(row)
+        session.commit()
+        return user.name + " has been unbanned."
 
     def members():
         if not bot.server_id:
@@ -4164,24 +4256,44 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session):
 
     return {
         "reply": reply, "say": say, "say_in": say_in, "notify": notify,
+        "warn": warn, "ban": ban, "unban": unban,
         "members": members, "channels": channels, "recent": recent,
         "remember": remember, "recall": recall, "forget": forget,
         "len": len, "str": str, "int": int, "range": safe_range, "min": min, "max": max, "abs": abs,
     }, flush
 
 
-async def _run_bot_scripts(channel_id: int, sender_name: str, content: str) -> None:
+async def _run_bot_joins(server_id: int, name: str) -> None:
+    with Session(engine) as session:
+        bots = session.exec(select(Bot).where(Bot.script != "", Bot.server_id == server_id)).all()
+        for bot in bots:
+            helpers, flush = _script_actions(bot, bot.home_channel_id, session, None)
+            try:
+                botcode.run_join(bot.script, name, helpers)
+            except botcode.ScriptError as exc:
+                log.warning("Bot %s script error: %s", bot.name, exc)
+                continue
+            await flush()
+
+
+async def _run_bot_scripts(channel_id: int, sender_id: int, sender_name: str, content: str) -> None:
     with Session(engine) as session:
         channel = session.get(Channel, channel_id)
         if not channel:
             return
+        role = "member"
+        if channel.server_id:
+            mem = _server_membership(session, sender_id, channel.server_id)
+            if mem:
+                role = mem.role
         bots = session.exec(select(Bot).where(Bot.script != "")).all()
         for bot in bots:
             if bot.server_id and bot.server_id != channel.server_id:
                 continue
-            helpers, flush = _script_actions(bot, channel_id, session)
+            helpers, flush = _script_actions(bot, channel_id, session, sender_id)
             try:
-                botcode.run_message(bot.script, botcode.Msg(content, sender_name, channel.name), helpers)
+                botcode.run_message(
+                    bot.script, botcode.Msg(content, sender_name, channel.name, role), helpers)
             except botcode.ScriptError as exc:
                 log.warning("Bot %s script error: %s", bot.name, exc)
                 continue
@@ -4218,11 +4330,11 @@ async def _run_scheduled_bot_scripts(session: Session, now: datetime) -> None:
             session.commit()
 
 
-async def _handle_bot_messages(channel_id: int, sender_name: str, content: str) -> None:
+async def _handle_bot_messages(channel_id: int, sender_id: int, sender_name: str, content: str) -> None:
     text = (content or "").strip()
     if not text:
         return
-    await _run_bot_scripts(channel_id, sender_name, text)
+    await _run_bot_scripts(channel_id, sender_id, sender_name, text)
     low = text.lower()
     with Session(engine) as session:
         channel = session.get(Channel, channel_id)
@@ -4480,7 +4592,7 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     session.add(xp_rec); session.commit()
                 await _chat_broadcast({"type": "channel_message", "message": cm_dict})
                 if content:
-                    await _handle_bot_messages(channel_id, uname, content)
+                    await _handle_bot_messages(channel_id, user_id, uname, content)
                 if leveled_up:
                     await _chat_broadcast({"type": "level_up", "user_id": user_id,
                                            "user_name": uname, "level": new_level,
