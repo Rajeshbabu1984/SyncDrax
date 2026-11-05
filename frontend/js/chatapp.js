@@ -24,6 +24,12 @@ function getUser()  { try { return JSON.parse(localStorage.getItem('synctact_use
 function getToken() { return localStorage.getItem('synctact_token') || ''; }
 
 const user  = getUser();
+
+function ownsThisServer() {
+  if (!user || !activeServerId) return false;
+  const srv = servers.find(s => Number(s.id) === Number(activeServerId));
+  return !!(srv && (srv.role === 'owner' || srv.owner_id === user.id));
+}
 const token = getToken();
 
 // ── UI refs ───────────────────────────────────────────────────────────────────
@@ -1194,7 +1200,7 @@ async function openChannel(ch) {
     if (readonlyBar) { readonlyBar.textContent = '🗃 This channel has been archived.'; readonlyBar.classList.add('visible'); }
     if (msgInputEl) { msgInputEl.disabled = true; msgInputEl.placeholder = 'Channel archived'; }
     if (sendBtnEl)  sendBtnEl.disabled = true;
-  } else if (ch.readonly && user.role === 'member') {
+  } else if (ch.readonly && user.role === 'member' && !ownsThisServer()) {
     if (readonlyBar) { readonlyBar.innerHTML = '<i class="fa-solid fa-lock"></i> This channel is read-only — only moderators can post.'; readonlyBar.classList.add('visible'); }
     if (msgInputEl) { msgInputEl.disabled = true; msgInputEl.placeholder = 'Read-only channel'; }
     if (sendBtnEl)  sendBtnEl.disabled = true;
@@ -1402,10 +1408,10 @@ function appendMessage(m, initial) {
   }
   // Show pin button only to channel owner (created_by === 0 means seeded/system channel — anyone can pin)
   const activeChannel = activeType === 'channel' ? channels.find(c => c.id === activeId) : null;
-  const canPin = activeType === 'dm' || !activeChannel || activeChannel.created_by === 0 || activeChannel.created_by === user.id;
+  const canPin = activeType === 'dm' || !activeChannel || activeChannel.created_by === 0 || activeChannel.created_by === user.id || ownsThisServer();
 
   const isSender = m.sender_id === user.id;
-  const canDelete = isSender || m.bot_name; // anyone can delete bot messages
+  const canDelete = isSender || m.bot_name || ownsThisServer();
   if (isSender) bubble.dataset.senderSelf = '1';
 
   // Ephemeral messages have no DB id — skip interactive actions
@@ -1418,7 +1424,7 @@ function appendMessage(m, initial) {
     <button class="react-btn" onclick="openForwardModal(${m.id})" title="Forward">↪️</button>
     ${isSender && !m.bot_name ? `<button class="react-btn" onclick="startEditMessage(${m.id})" title="Edit">✏️</button>` : ''}
     ${canDelete ? `<button class="react-btn del-msg-btn" onclick="deleteMessage(${m.id})" title="Delete message">🗑️</button>` : ''}
-    ${(activeChannel && activeChannel.created_by === user.id && !isSender && !m.bot_name) ? `<button class="mod-btn" onclick="kickUser(${m.sender_id},${m.channel_id})" title="Kick from channel">🥢</button><button class="mod-btn" onclick="muteUser(${m.sender_id},${m.channel_id})" title="Mute in channel">🔇</button>` : ''}
+    ${(activeChannel && (activeChannel.created_by === user.id || ownsThisServer()) && !isSender && !m.bot_name) ? `<button class="mod-btn" onclick="kickUser(${m.sender_id},${m.channel_id})" title="Kick from channel">🥢</button><button class="mod-btn" onclick="muteUser(${m.sender_id},${m.channel_id})" title="Mute in channel">🔇</button>` : ''}
     ${(!isSender && !m.bot_name) ? `<button class="react-btn ctx-block" data-uid="${Number(m.sender_id)}" data-name="${esc(m.sender_name||'')}" onclick="blockUser(Number(this.dataset.uid), this.dataset.name)" title="Block user"><i class="fa-solid fa-ban"></i></button>` : ''}
   </span>`;
   }
@@ -1597,7 +1603,7 @@ async function executeSlashCommand(text) {
   // ── /announce ──────────────────────────────────────────────
   if (cmd === '/announce') {
     if (activeType !== 'channel') { showToast('Open a channel first'); return; }
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const text = parts.slice(1).join(' ').trim();
     if (!text) { showToast('Usage: /announce <text>'); return; }
     await authFetch('/chat/syncbot', {
@@ -1613,7 +1619,7 @@ async function executeSlashCommand(text) {
   // ── /lock ──────────────────────────────────────────────────
   if (cmd === '/lock') {
     if (activeType !== 'channel') { showToast('Open a channel first'); return; }
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const res = await authFetch(`/channels/${activeId}/settings`, {
       method: 'PATCH', body: JSON.stringify({ readonly: true })
     });
@@ -1625,7 +1631,7 @@ async function executeSlashCommand(text) {
   // ── /unlock ────────────────────────────────────────────────
   if (cmd === '/unlock') {
     if (activeType !== 'channel') { showToast('Open a channel first'); return; }
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const res = await authFetch(`/channels/${activeId}/settings`, {
       method: 'PATCH', body: JSON.stringify({ readonly: false })
     });
@@ -1637,7 +1643,7 @@ async function executeSlashCommand(text) {
   // ── /purge ─────────────────────────────────────────────────
   if (cmd === '/purge') {
     if (activeType !== 'channel') { showToast('Open a channel first'); return; }
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const n = parseInt(parts[1]) || 10;
     if (!confirm(`Delete the last ${n} messages in this channel?`)) return;
     const res = await authFetch(`/chat/channels/${activeId}/purge?count=${n}`, { method: 'DELETE' });
@@ -1663,7 +1669,7 @@ async function executeSlashCommand(text) {
   // ── /slowmode ─────────────────────────────────────────────
   if (cmd === '/slowmode') {
     if (activeType !== 'channel') { showToast('Open a channel first'); return; }
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const secs = parseInt(parts[1]) || 0;
     const res = await authFetch(`/chat/channels/${activeId}/slowmode`, {
       method: 'PATCH', body: JSON.stringify({ seconds: secs })
@@ -1675,7 +1681,7 @@ async function executeSlashCommand(text) {
 
   // ── /warn ─────────────────────────────────────────────────
   if (cmd === '/warn') {
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const mention = parts[1]; // e.g. @username
     const reason  = parts.slice(2).join(' ').trim();
     if (!mention || !reason) { showToast('Usage: /warn @user <reason>'); return; }
@@ -1693,7 +1699,7 @@ async function executeSlashCommand(text) {
 
   // ── /mute ─────────────────────────────────────────────────
   if (cmd === '/mute') {
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const mention  = parts[1];
     const mins     = parseInt(parts[2]) || null;
     const targetName = mention?.replace(/^@/, '').toLowerCase();
@@ -1711,7 +1717,7 @@ async function executeSlashCommand(text) {
   // ── /kick ─────────────────────────────────────────────────
   if (cmd === '/kick') {
     if (activeType !== 'channel') { showToast('Open a channel first'); return; }
-    if (user.role === 'member') { showToast('⛔ Moderators only'); return; }
+    if (user.role === 'member' && !ownsThisServer()) { showToast('⛔ Moderators only'); return; }
     const mention    = parts[1];
     const targetName = mention?.replace(/^@/, '').toLowerCase();
     const target = allUsers.find(u => u.name.toLowerCase() === targetName);
@@ -2321,7 +2327,7 @@ function _buildChannelLi(ch) {
   const arcIcon = ch.archived  ? `<i class="fa-solid fa-box-archive ch-archive-ico" title="Archived" style="font-size:.65rem;color:var(--text-muted);margin-left:4px;opacity:.7;"></i>` : '';
   const prefix = ch.channel_type === 'voice' ? '🔊' : (ch.name.charAt(0) === '#' ? '' : '#');
   li.innerHTML = `<span class="ch-prefix">${prefix}</span><span class="ch-name">${esc(ch.name)}</span>${roIcon}${arcIcon}`;
-  if (ch.created_by === user.id) {
+  if (ch.created_by === user.id || ownsThisServer()) {
     const del = document.createElement('button');
     del.className = 'ch-del-btn';
     del.title = 'Delete';

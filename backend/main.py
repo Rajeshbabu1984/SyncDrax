@@ -888,11 +888,22 @@ def _is_staff(user: User) -> bool:
     return getattr(user, "role", "member") in ("admin", "moderator")
 
 
-def _can_manage_channel(user: User, ch: Optional["Channel"]) -> bool:
-    """Staff can manage any channel; owners can manage their own. System channels (created_by=0) are staff-only."""
-    if not ch:
+def _owns_server(session: Session, user: User, server_id: Optional[int]) -> bool:
+    """True when this account is the owner of the server."""
+    if not user or not getattr(user, "id", None) or not server_id:
         return False
-    return _is_staff(user) or (ch.created_by != 0 and ch.created_by == user.id)
+    return _server_role(session, user.id, server_id) == "owner"
+
+
+def _can_manage_channel(session: Session, user: User, ch: Optional["Channel"]) -> bool:
+    """Staff, the person who created the channel, or the owner of its server."""
+    if not ch or not user:
+        return False
+    if _is_staff(user):
+        return True
+    if ch.created_by and ch.created_by == user.id:
+        return True
+    return bool(ch.server_id and _owns_server(session, user, ch.server_id))
 
 
 def _can_view_message(user: User, cm: "ChatMessage") -> bool:
@@ -1079,7 +1090,7 @@ def require_staff_or_channel_owner(
     user = get_current_user(creds, session)
     if _is_staff(user):
         return user
-    if channel_id is not None and _can_manage_channel(user, session.get(Channel, channel_id)):
+    if channel_id is not None and _can_manage_channel(session, user, session.get(Channel, channel_id)):
         return user
     raise HTTPException(status_code=403, detail="Only the channel owner or a moderator can do this")
 
@@ -1502,7 +1513,7 @@ def set_channel_role(channel_id: int, user_id: int, body: dict,
 # -------------------------------------------------------------
 @app.get("/webhooks")
 def list_webhooks(channel_id: int, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    if not _can_manage_channel(current_user, session.get(Channel, channel_id)):
+    if not _can_manage_channel(session, current_user, session.get(Channel, channel_id)):
         raise HTTPException(403, "Only the channel owner or a moderator can view webhooks")
     rows = session.exec(select(WebhookConfig).where(WebhookConfig.channel_id == channel_id, WebhookConfig.active == True)).all()
     return [{"id": r.id, "name": r.name, "token": r.token, "channel_id": r.channel_id} for r in rows]
@@ -1512,7 +1523,7 @@ def create_webhook(body: dict, current_user: User = Depends(get_current_user), s
     cid = body.get("channel_id"); name = body.get("name", "Webhook")
     if not cid:
         raise HTTPException(400, "channel_id required")
-    if not _can_manage_channel(current_user, session.get(Channel, cid)):
+    if not _can_manage_channel(session, current_user, session.get(Channel, cid)):
         raise HTTPException(403, "Only the channel owner or a moderator can create webhooks")
     tok = secrets.token_urlsafe(32)
     wh = WebhookConfig(channel_id=cid, name=str(name)[:80], token=tok, created_by=current_user.id)
@@ -1524,7 +1535,7 @@ def delete_webhook(wid: int, current_user: User = Depends(get_current_user), ses
     row = session.get(WebhookConfig, wid)
     if not row:
         raise HTTPException(404)
-    if row.created_by != current_user.id and not _can_manage_channel(current_user, session.get(Channel, row.channel_id)):
+    if row.created_by != current_user.id and not _can_manage_channel(session, current_user, session.get(Channel, row.channel_id)):
         raise HTTPException(403, "Not your webhook")
     row.active = False; session.add(row); session.commit()
     return {"ok": True}
@@ -1838,7 +1849,8 @@ def delete_event(event_id: int, current_user: User = Depends(get_current_user), 
     e = session.get(CalendarEvent, event_id)
     if not e:
         raise HTTPException(status_code=404, detail="Event not found")
-    if e.creator_id != current_user.id and current_user.role not in ('admin', 'moderator'):
+    ch = session.get(Channel, e.channel_id) if e.channel_id else None
+    if e.creator_id != current_user.id and current_user.role not in ('admin', 'moderator') and not (ch and _owns_server(session, current_user, ch.server_id)):
         raise HTTPException(status_code=403, detail="Forbidden")
     session.delete(e); session.commit()
     return {"ok": True}
@@ -1861,11 +1873,11 @@ class ChannelSettingsIn(BaseModel):
 def update_channel_settings(channel_id: int, body: ChannelSettingsIn,
                               current_user: User = Depends(get_current_user),
                               session: Session = Depends(get_session)):
-    if current_user.role not in ('admin', 'moderator'):
-        raise HTTPException(status_code=403, detail="Moderator required")
     ch = session.get(Channel, channel_id)
     if not ch:
         raise HTTPException(status_code=404, detail="Channel not found")
+    if current_user.role not in ('admin', 'moderator') and not _owns_server(session, current_user, ch.server_id):
+        raise HTTPException(status_code=403, detail="Moderator required")
     if body.archived is not None:  ch.archived = body.archived
     if body.readonly is not None:  ch.readonly = body.readonly
     if body.name is not None:      ch.name = body.name[:80]
@@ -2566,7 +2578,7 @@ async def delete_message(
         raise HTTPException(status_code=404, detail="Message not found")
     is_own = cm.sender_id == current_user.id and cm.sender_id != 0
     if cm.channel_id is not None:
-        allowed = is_own or _can_manage_channel(current_user, session.get(Channel, cm.channel_id))
+        allowed = is_own or _can_manage_channel(session, current_user, session.get(Channel, cm.channel_id))
     else:
         allowed = is_own or (cm.sender_id == 0 and _can_view_message(current_user, cm))
     if not allowed:
@@ -2589,7 +2601,7 @@ async def toggle_pin(
     # Only the channel owner can pin (DM messages: either participant can pin)
     if cm.channel_id:
         ch = session.get(Channel, cm.channel_id)
-        if (ch and ch.created_by != 0 and ch.created_by != current_user.id and not _is_staff(current_user)
+        if (ch and ch.created_by != 0 and not _can_manage_channel(session, current_user, ch)
                 and not _holds(session, current_user, ch.server_id, "pin")):
             raise HTTPException(status_code=403, detail="Only the channel owner can pin messages")
     elif not _can_view_message(current_user, cm):
@@ -2849,11 +2861,12 @@ async def mute_user(
     if not target:
         raise HTTPException(404, "User not found")
     if body.channel_id:
-        if not _can_manage_channel(current_user, session.get(Channel, body.channel_id)):
+        if not _can_manage_channel(session, current_user, session.get(Channel, body.channel_id)):
             raise HTTPException(403, "Only the channel owner or a moderator can mute in this channel")
     elif not _is_staff(current_user):
         raise HTTPException(403, "Only moderators can mute server-wide")
-    if _is_staff(target) and current_user.role != "admin":
+    mute_ch = session.get(Channel, body.channel_id) if body.channel_id else None
+    if _is_staff(target) and current_user.role != "admin" and not (mute_ch and _owns_server(session, current_user, mute_ch.server_id)):
         raise HTTPException(403, "Cannot mute a moderator or admin")
     muted_until = None
     if body.minutes:
@@ -2905,9 +2918,10 @@ async def kick_user(
     target = session.get(User, user_id)
     if not target:
         raise HTTPException(404, "User not found")
-    if not _can_manage_channel(current_user, session.get(Channel, channel_id)):
+    kick_ch = session.get(Channel, channel_id)
+    if not _can_manage_channel(session, current_user, kick_ch):
         raise HTTPException(403, "Only the channel owner or a moderator can kick users")
-    if _is_staff(target) and current_user.role != "admin":
+    if _is_staff(target) and current_user.role != "admin" and not (kick_ch and _owns_server(session, current_user, kick_ch.server_id)):
         raise HTTPException(403, "Cannot kick a moderator or admin")
     existing = session.exec(
         select(KickedUser).where(KickedUser.user_id == user_id, KickedUser.channel_id == channel_id)
@@ -2992,7 +3006,7 @@ async def set_slowmode(
     ch = session.get(Channel, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
-    if not _can_manage_channel(current_user, ch):
+    if not _can_manage_channel(session, current_user, ch):
         raise HTTPException(403, "Only the channel owner or a moderator can set slowmode")
     ch.slowmode_seconds = max(0, min(body.seconds, 3600))
     session.add(ch); session.commit()
@@ -3340,7 +3354,7 @@ async def set_channel_category(
     ch = session.get(Channel, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
-    if not _can_manage_channel(current_user, ch):
+    if not _can_manage_channel(session, current_user, ch):
         raise HTTPException(403, "Not your channel")
     ch.category_id = body.get("category_id")
     session.add(ch); session.commit()
@@ -4215,7 +4229,7 @@ async def syncbot_message(
 
     # Only channel owners / moderators may broadcast Volt; DMs are always ephemeral
     if target == "channel":
-        if not body.channel_id or not _can_manage_channel(current_user, session.get(Channel, body.channel_id)):
+        if not body.channel_id or not _can_manage_channel(session, current_user, session.get(Channel, body.channel_id)):
             target = "self"  # silently downgrade
 
     if target == "channel":
@@ -4692,9 +4706,9 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
     def _actor_can(perm):
         if not actor_id or not bot.server_id:
             return False
-        mem = _server_membership(session, actor_id, bot.server_id)
-        if mem and mem.role == "owner":
+        if _server_role(session, actor_id, bot.server_id) == "owner":
             return True
+        mem = _server_membership(session, actor_id, bot.server_id)
         if mem and mem.role == "moderator" and perm in (
                 "warn", "ban", "unban", "kick", "mute", "pin", "manage_channels"):
             return True
@@ -5082,7 +5096,7 @@ def _open_url_fields(session: Session, url: Optional[str], target: str, owner_id
     if not url or not url.startswith("https://") or len(url) > 2000:
         return {}
     owner = session.get(User, owner_id)
-    if target == "channel" and owner and _can_manage_channel(owner, session.get(Channel, channel_id)):
+    if target == "channel" and owner and _can_manage_channel(session, owner, session.get(Channel, channel_id)):
         return {"open_url": url}
     return {"open_url": url, "open_url_for_uid": owner_id}
 
@@ -5124,7 +5138,7 @@ def create_task(
     if body.open_url and not body.open_url.startswith("https://"):
         raise HTTPException(400, "open_url must start with https://")
     target = body.url_target if body.url_target in ("self", "channel") else "self"
-    if target == "channel" and not _can_manage_channel(current_user, ch):
+    if target == "channel" and not _can_manage_channel(session, current_user, ch):
         target = "self"  # silently downgrade — not the channel owner
     t = RecurringTask(
         owner_id=current_user.id,
@@ -5254,7 +5268,8 @@ async def chat_ws(ws: WebSocket, user_id: int, token: str = Query(...)):
                     if ch and ch.readonly:
                         with Session(engine) as s2:
                             u2 = s2.get(User, user_id)
-                        if not u2 or u2.role not in ('admin', 'moderator'):
+                            owner_here = bool(u2 and _owns_server(s2, u2, ch.server_id))
+                        if not u2 or (u2.role not in ('admin', 'moderator') and not owner_here):
                             await ws.send_text(json.dumps({"type": "error", "message": "This channel is read-only."}))
                             continue
                     # /remind slash command
@@ -5454,7 +5469,10 @@ async def purge_messages(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if current_user.role not in ('admin', 'moderator'):
+    ch = session.get(Channel, channel_id)
+    if not ch:
+        raise HTTPException(404, "Channel not found")
+    if current_user.role not in ('admin', 'moderator') and not _owns_server(session, current_user, ch.server_id):
         raise HTTPException(403, "Moderators only")
     count = max(1, min(count, 100))
     msgs = session.exec(
@@ -5488,7 +5506,8 @@ async def warn_user(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if current_user.role not in ('admin', 'moderator'):
+    warn_ch = session.get(Channel, body.channel_id) if body.channel_id else None
+    if current_user.role not in ('admin', 'moderator') and not (warn_ch and _owns_server(session, current_user, warn_ch.server_id)):
         raise HTTPException(403, "Moderators only")
     target = session.get(User, body.user_id)
     if not target:
