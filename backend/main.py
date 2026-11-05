@@ -310,6 +310,36 @@ class ServerBan(SQLModel, table=True):
     created_at: datetime     = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ServerRole(SQLModel, table=True):
+    """A role the server owner or a moderator wrote on the website."""
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    server_id:  int           = Field(index=True)
+    name:       str
+    color:      str           = Field(default="#7c3aed")
+    script:     str           = Field(default="")
+    memory:     str           = Field(default="{}")
+    position:   int           = Field(default=0)
+    created_by: int           = Field(default=0)
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MemberRole(SQLModel, table=True):
+    id:        Optional[int] = Field(default=None, primary_key=True)
+    server_id: int           = Field(index=True)
+    user_id:   int           = Field(index=True)
+    role_id:   int           = Field(index=True)
+
+
+class VoiceSeat(SQLModel, table=True):
+    """Who is currently in a voice channel. A missed heartbeat drops the seat."""
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    channel_id: int           = Field(index=True)
+    server_id:  int           = Field(index=True)
+    user_id:    int           = Field(index=True)
+    user_name:  str           = Field(default="")
+    updated_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class InviteLink(SQLModel, table=True):
     id:         Optional[int]      = Field(default=None, primary_key=True)
     code:       str                = Field(index=True, unique=True)
@@ -884,6 +914,54 @@ def _server_membership(session: Session, user_id: int, server_id: int) -> Option
 def _can_manage_server(session: Session, user: User, server_id: int) -> bool:
     mem = _server_membership(session, user.id, server_id)
     return bool(mem and mem.role in ("owner", "moderator")) or _is_staff(user)
+
+
+# Powers a coded role can grant. Anything else in permissions() is ignored.
+ROLE_ACTIONS = {
+    "kick", "ban", "unban", "warn", "mute", "pin", "manage_channels", "manage_roles",
+}
+
+
+def _role_color(value: Optional[str]) -> str:
+    text = (value or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return text.lower()
+    return "#7c3aed"
+
+
+def _role_permissions_for(session: Session, user_id: Optional[int], server_id: Optional[int]) -> set:
+    """Powers granted by the custom roles this person holds on the server."""
+    if not user_id or not server_id:
+        return set()
+    links = session.exec(select(MemberRole).where(
+        MemberRole.server_id == server_id, MemberRole.user_id == user_id)).all()
+    if not links:
+        return set()
+    held = {link.role_id for link in links}
+    grants = set()
+    roles = session.exec(select(ServerRole).where(ServerRole.server_id == server_id)).all()
+    for role in roles:
+        if role.id not in held or not (role.script or "").strip():
+            continue
+        try:
+            for name in botcode.run_permissions(role.script):
+                if name in ROLE_ACTIONS:
+                    grants.add(name)
+        except Exception as exc:
+            log.warning("Role %s permissions error: %s", role.name, exc)
+    return grants
+
+
+def _holds(session: Session, user: User, server_id: Optional[int], perm: str) -> bool:
+    if not server_id:
+        return False
+    if _can_manage_server(session, user, server_id):
+        return True
+    return perm in _role_permissions_for(session, user.id, server_id)
+
+
+def _can_assign_roles(session: Session, user: User, server_id: int) -> bool:
+    return _holds(session, user, server_id, "manage_roles")
 
 
 def _join_server(session: Session, server_id: int, user_id: int, role: str = "member") -> bool:
@@ -2247,7 +2325,7 @@ def _clean_emoji(emoji) -> Optional[str]:
 class ChannelCreate(BaseModel):
     name:         str
     description:  Optional[str] = None
-    channel_type: Optional[str] = 'text'  # text | moodboard
+    channel_type: Optional[str] = 'text'  # text | moodboard | voice
     server_id:    Optional[int] = None
 
 
@@ -2297,8 +2375,11 @@ def create_channel(
         req.server_id = home.id if home else None
     if not req.server_id or req.server_id not in _my_server_ids(session, current_user.id):
         raise HTTPException(status_code=403, detail="Pick a server you belong to")
+    kind = (req.channel_type or "text").strip().lower()
+    if kind not in ("text", "moodboard", "voice"):
+        kind = "text"
     ch = Channel(name=name, description=req.description, created_by=current_user.id,
-                 channel_type=req.channel_type or 'text', server_id=req.server_id)
+                 channel_type=kind, server_id=req.server_id)
     session.add(ch)
     session.commit()
     session.refresh(ch)
@@ -2428,12 +2509,14 @@ async def delete_channel(
     ch = session.get(Channel, channel_id)
     if not ch:
         raise HTTPException(status_code=404, detail="Channel not found")
-    if ch.created_by != current_user.id:
+    if ch.created_by != current_user.id and not _holds(session, current_user, ch.server_id, "manage_channels"):
         raise HTTPException(status_code=403, detail="Only the channel owner can delete this channel")
     # Delete all messages in channel first
     msgs = session.exec(select(ChatMessage).where(ChatMessage.channel_id == channel_id)).all()
     for m in msgs:
         session.delete(m)
+    for seat in session.exec(select(VoiceSeat).where(VoiceSeat.channel_id == channel_id)).all():
+        session.delete(seat)
     session.delete(ch)
     session.commit()
     await _chat_broadcast({"type": "channel_deleted", "channel_id": channel_id})
@@ -2475,7 +2558,8 @@ async def toggle_pin(
     # Only the channel owner can pin (DM messages: either participant can pin)
     if cm.channel_id:
         ch = session.get(Channel, cm.channel_id)
-        if ch and ch.created_by != 0 and ch.created_by != current_user.id and not _is_staff(current_user):
+        if (ch and ch.created_by != 0 and ch.created_by != current_user.id and not _is_staff(current_user)
+                and not _holds(session, current_user, ch.server_id, "pin")):
             raise HTTPException(status_code=403, detail="Only the channel owner can pin messages")
     elif not _can_view_message(current_user, cm):
         raise HTTPException(status_code=404, detail="Message not found")
@@ -3367,12 +3451,23 @@ def list_server_members(
     if server_id not in _my_server_ids(session, current_user.id):
         raise HTTPException(403, "You're not in that server")
     rows = session.exec(select(ServerMember).where(ServerMember.server_id == server_id)).all()
+    catalog = {r.id: r for r in session.exec(select(ServerRole).where(ServerRole.server_id == server_id)).all()}
+    links = session.exec(select(MemberRole).where(MemberRole.server_id == server_id)).all()
+    by_user = {}
+    for link in links:
+        by_user.setdefault(link.user_id, []).append(link.role_id)
     out = []
     for m in rows:
         u = session.get(User, m.user_id)
         if not u or u.role == "bot":
             continue
-        out.append({"user_id": u.id, "name": u.name, "role": m.role, "avatar_url": u.avatar_url})
+        custom = []
+        for role_id in by_user.get(u.id, []):
+            role = catalog.get(role_id)
+            if role:
+                custom.append({"id": role.id, "name": role.name, "color": role.color})
+        out.append({"user_id": u.id, "name": u.name, "role": m.role,
+                    "avatar_url": u.avatar_url, "roles": custom})
     out.sort(key=lambda r: (0 if r["role"] == "owner" else 1 if r["role"] == "moderator" else 2, r["name"].lower()))
     return out
 
@@ -3407,7 +3502,7 @@ def remove_member(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if not _can_manage_server(session, current_user, server_id):
+    if not _holds(session, current_user, server_id, "kick"):
         raise HTTPException(403, "Only the owner or a moderator can remove members")
     me = _server_membership(session, current_user.id, server_id)
     mem = _server_membership(session, user_id, server_id)
@@ -3416,7 +3511,356 @@ def remove_member(
     if me and me.role == "moderator" and mem.role == "moderator":
         raise HTTPException(403, "Moderators can't remove other moderators")
     session.delete(mem)
+    for link in session.exec(select(MemberRole).where(
+            MemberRole.server_id == server_id, MemberRole.user_id == user_id)).all():
+        session.delete(link)
     session.commit()
+    return {"ok": True}
+
+
+class ServerBanRequest(BaseModel):
+    user_id: int
+    reason: str = ""
+
+
+def _ban_allowed(session: Session, user: User, server_id: int, perm: str) -> bool:
+    return _holds(session, user, server_id, perm)
+
+
+@app.get("/servers/{server_id}/bans")
+def list_server_bans(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if server_id not in _my_server_ids(session, current_user.id):
+        raise HTTPException(403, "You're not in that server")
+    if not (_ban_allowed(session, current_user, server_id, "ban") or _ban_allowed(session, current_user, server_id, "unban")):
+        raise HTTPException(403, "Only a moderator can see the ban list")
+    rows = session.exec(select(ServerBan).where(ServerBan.server_id == server_id)).all()
+    out = []
+    for row in rows:
+        user = session.get(User, row.user_id)
+        out.append({
+            "user_id": row.user_id,
+            "name": (user.name if user else None) or row.user_name or "Someone",
+            "reason": row.reason or "",
+        })
+    out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
+@app.post("/servers/{server_id}/bans", status_code=201)
+def ban_server_member(
+    server_id: int,
+    body: ServerBanRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _ban_allowed(session, current_user, server_id, "ban"):
+        raise HTTPException(403, "Only a moderator can ban people")
+    if body.user_id == current_user.id:
+        raise HTTPException(400, "You can't ban yourself")
+    target = session.get(User, body.user_id)
+    mem = _server_membership(session, body.user_id, server_id)
+    if not target or not mem:
+        raise HTTPException(404, "Member not found")
+    if mem.role == "owner":
+        raise HTTPException(400, "The owner can't be banned")
+    me = _server_membership(session, current_user.id, server_id)
+    if mem.role == "moderator" and (not me or me.role != "owner"):
+        raise HTTPException(403, "Only the owner can ban a moderator")
+    reason = (body.reason or "")[:300]
+    session.delete(mem)
+    for link in session.exec(select(MemberRole).where(
+            MemberRole.server_id == server_id, MemberRole.user_id == target.id)).all():
+        session.delete(link)
+    already = session.exec(select(ServerBan).where(
+        ServerBan.server_id == server_id, ServerBan.user_id == target.id)).first()
+    if already:
+        already.reason = reason
+        already.user_name = target.name[:64]
+        session.add(already)
+    else:
+        session.add(ServerBan(server_id=server_id, user_id=target.id, user_name=target.name[:64], reason=reason))
+    session.commit()
+    return {"ok": True, "name": target.name}
+
+
+@app.delete("/servers/{server_id}/bans/{user_id}")
+def unban_server_member(
+    server_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _ban_allowed(session, current_user, server_id, "unban"):
+        raise HTTPException(403, "Only a moderator can unban people")
+    rows = session.exec(select(ServerBan).where(
+        ServerBan.server_id == server_id, ServerBan.user_id == user_id)).all()
+    if not rows:
+        raise HTTPException(404, "That person is not banned")
+    for row in rows:
+        session.delete(row)
+    session.commit()
+    return {"ok": True}
+
+
+class RoleWrite(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    script: Optional[str] = None
+
+
+def _role_dict(role: ServerRole, include_script: bool) -> dict:
+    data = {"id": role.id, "name": role.name, "color": role.color or "#7c3aed", "server_id": role.server_id}
+    if include_script:
+        data["script"] = role.script or ""
+    return data
+
+
+@app.get("/servers/{server_id}/roles")
+def list_roles(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if server_id not in _my_server_ids(session, current_user.id):
+        raise HTTPException(403, "You're not in that server")
+    include = _can_manage_server(session, current_user, server_id)
+    roles = session.exec(select(ServerRole).where(ServerRole.server_id == server_id)).all()
+    roles.sort(key=lambda r: (r.position, (r.name or "").lower()))
+    return {
+        "roles": [_role_dict(r, include) for r in roles],
+        "can_code": include,
+        "can_assign": _can_assign_roles(session, current_user, server_id),
+    }
+
+
+@app.post("/servers/{server_id}/roles", status_code=201)
+def create_role(
+    server_id: int,
+    body: RoleWrite,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _can_manage_server(session, current_user, server_id):
+        raise HTTPException(403, "Only the owner or a moderator can create a role. Members cannot.")
+    name = (body.name or "").strip()[:32]
+    if not name:
+        raise HTTPException(400, "Role name required")
+    existing = session.exec(select(ServerRole).where(ServerRole.server_id == server_id)).all()
+    if len(existing) >= 20:
+        raise HTTPException(400, "This server already has 20 roles")
+    if any(r.name.lower() == name.lower() for r in existing):
+        raise HTTPException(400, "A role with that name already exists")
+    script = (body.script or "")[:8000]
+    if script.strip():
+        try:
+            botcode.function_names(script)
+        except botcode.ScriptError as exc:
+            raise HTTPException(400, str(exc))
+    role = ServerRole(
+        server_id=server_id, name=name, color=_role_color(body.color),
+        script=script, created_by=current_user.id, position=len(existing),
+    )
+    session.add(role)
+    session.commit()
+    session.refresh(role)
+    return _role_dict(role, True)
+
+
+@app.put("/servers/{server_id}/roles/{role_id}")
+def update_role(
+    server_id: int,
+    role_id: int,
+    body: RoleWrite,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _can_manage_server(session, current_user, server_id):
+        raise HTTPException(403, "Only the owner or a moderator can code a role. Members cannot.")
+    role = session.get(ServerRole, role_id)
+    if not role or role.server_id != server_id:
+        raise HTTPException(404, "Role not found")
+    if body.name is not None:
+        name = body.name.strip()[:32]
+        if not name:
+            raise HTTPException(400, "Role name required")
+        role.name = name
+    if body.color is not None:
+        role.color = _role_color(body.color)
+    if body.script is not None:
+        script = body.script[:8000]
+        if script.strip():
+            try:
+                botcode.function_names(script)
+            except botcode.ScriptError as exc:
+                raise HTTPException(400, str(exc))
+        role.script = script
+    session.add(role)
+    session.commit()
+    return _role_dict(role, True)
+
+
+@app.delete("/servers/{server_id}/roles/{role_id}")
+def delete_role(
+    server_id: int,
+    role_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _can_manage_server(session, current_user, server_id):
+        raise HTTPException(403, "Only the owner or a moderator can delete a role")
+    role = session.get(ServerRole, role_id)
+    if not role or role.server_id != server_id:
+        raise HTTPException(404, "Role not found")
+    for link in session.exec(select(MemberRole).where(MemberRole.role_id == role.id)).all():
+        session.delete(link)
+    session.delete(role)
+    session.commit()
+    return {"ok": True}
+
+
+class RoleAssign(BaseModel):
+    role_ids: List[int] = []
+
+
+@app.put("/servers/{server_id}/members/{user_id}/roles")
+def assign_member_roles(
+    server_id: int,
+    user_id: int,
+    body: RoleAssign,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not _can_assign_roles(session, current_user, server_id):
+        raise HTTPException(403, "You can't assign roles here")
+    if not _server_membership(session, user_id, server_id):
+        raise HTTPException(404, "Member not found")
+    wanted = []
+    for role_id in body.role_ids[:20]:
+        role = session.get(ServerRole, int(role_id))
+        if role and role.server_id == server_id and role.id not in wanted:
+            wanted.append(role.id)
+    for link in session.exec(select(MemberRole).where(
+            MemberRole.server_id == server_id, MemberRole.user_id == user_id)).all():
+        session.delete(link)
+    for role_id in wanted:
+        session.add(MemberRole(server_id=server_id, user_id=user_id, role_id=role_id))
+    session.commit()
+    return {"ok": True, "role_ids": wanted}
+
+
+def _voice_fresh(session: Session, server_id: Optional[int] = None) -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=45)
+    rows = session.exec(select(VoiceSeat)).all()
+    for row in rows:
+        if server_id is not None and row.server_id != server_id:
+            continue
+        ts = row.updated_at
+        if ts is None or (ts.tzinfo is None and ts.replace(tzinfo=timezone.utc) < cutoff) or (ts.tzinfo is not None and ts < cutoff):
+            session.delete(row)
+
+
+def _voice_payload(session: Session, channel_id: int) -> list:
+    rows = session.exec(select(VoiceSeat).where(VoiceSeat.channel_id == channel_id)).all()
+    return [{"user_id": r.user_id, "name": r.user_name} for r in rows]
+
+
+async def _broadcast_voice(session: Session, channel: Channel) -> None:
+    await _chat_broadcast({
+        "type": "voice",
+        "server_id": channel.server_id,
+        "channel_id": channel.id,
+        "members": _voice_payload(session, channel.id),
+    })
+
+
+@app.get("/servers/{server_id}/voice")
+def list_voice(
+    server_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if server_id not in _my_server_ids(session, current_user.id):
+        raise HTTPException(403, "You're not in that server")
+    _voice_fresh(session, server_id)
+    session.commit()
+    seats = session.exec(select(VoiceSeat).where(VoiceSeat.server_id == server_id)).all()
+    grouped = {}
+    for seat in seats:
+        grouped.setdefault(seat.channel_id, []).append({"user_id": seat.user_id, "name": seat.user_name})
+    return grouped
+
+
+def _voice_channel(session: Session, channel_id: int, user: User) -> Channel:
+    ch = session.get(Channel, channel_id)
+    if not ch or (ch.channel_type or "text") != "voice":
+        raise HTTPException(404, "Voice channel not found")
+    if not _is_server_member(session, user.id, ch.server_id):
+        raise HTTPException(403, "You're not in that server")
+    return ch
+
+
+@app.post("/channels/{channel_id}/voice/join")
+async def join_voice(
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ch = _voice_channel(session, channel_id, current_user)
+    _voice_fresh(session, ch.server_id)
+    previous = []
+    for seat in session.exec(select(VoiceSeat).where(
+            VoiceSeat.server_id == ch.server_id, VoiceSeat.user_id == current_user.id)).all():
+        if seat.channel_id != ch.id:
+            previous.append(seat.channel_id)
+        session.delete(seat)
+    session.add(VoiceSeat(
+        channel_id=ch.id, server_id=ch.server_id, user_id=current_user.id, user_name=current_user.name,
+    ))
+    session.commit()
+    await _broadcast_voice(session, ch)
+    for other_id in set(previous):
+        other = session.get(Channel, other_id)
+        if other:
+            await _broadcast_voice(session, other)
+    return {"room_code": f"V{ch.id}", "members": _voice_payload(session, ch.id)}
+
+
+@app.post("/channels/{channel_id}/voice/heartbeat")
+def voice_heartbeat(
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    seat = session.exec(select(VoiceSeat).where(
+        VoiceSeat.channel_id == channel_id, VoiceSeat.user_id == current_user.id)).first()
+    if not seat:
+        raise HTTPException(404, "You're not in that voice channel")
+    seat.updated_at = datetime.now(timezone.utc)
+    seat.user_name = current_user.name
+    session.add(seat)
+    session.commit()
+    return {"ok": True}
+
+
+@app.post("/channels/{channel_id}/voice/leave")
+async def leave_voice(
+    channel_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ch = session.get(Channel, channel_id)
+    if not ch:
+        return {"ok": True}
+    for seat in session.exec(select(VoiceSeat).where(
+            VoiceSeat.channel_id == channel_id, VoiceSeat.user_id == current_user.id)).all():
+        session.delete(seat)
+    session.commit()
+    if (ch.channel_type or "") == "voice":
+        await _broadcast_voice(session, ch)
     return {"ok": True}
 
 
@@ -3470,6 +3914,14 @@ def _erase_server(session: Session, srv: ChatServer) -> None:
         for job in session.exec(select(BotJob).where(BotJob.bot_id == bot.id)).all():
             session.delete(job)
         session.delete(bot)
+    for role in session.exec(select(ServerRole).where(ServerRole.server_id == srv.id)).all():
+        session.delete(role)
+    for link in session.exec(select(MemberRole).where(MemberRole.server_id == srv.id)).all():
+        session.delete(link)
+    for ban in session.exec(select(ServerBan).where(ServerBan.server_id == srv.id)).all():
+        session.delete(ban)
+    for seat in session.exec(select(VoiceSeat).where(VoiceSeat.server_id == srv.id)).all():
+        session.delete(seat)
     session.delete(srv)
 
 
@@ -3549,6 +4001,7 @@ async def use_invite(
         session.commit()
         if server_id:
             await _run_bot_joins(server_id, current_user.name)
+            await _run_role_joins(server_id, current_user.name)
     srv = session.get(ChatServer, server_id) if server_id else None
     return {
         "code":       code,
@@ -4063,7 +4516,7 @@ async def _post_as_bot(session: Session, bot: Bot, channel_id: Optional[int], co
                        dm_to: Optional[int] = None) -> None:
     cm = ChatMessage(
         channel_id=channel_id, dm_to_user_id=dm_to, sender_id=0, sender_name=bot.name,
-        content=content, bot_name=f"{bot.avatar} {bot.name}",
+        content=content, bot_name=f"{getattr(bot, 'avatar', None) or '🎭'} {bot.name}",
     )
     session.add(cm)
     session.commit()
@@ -4199,11 +4652,16 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
         _cap()
         pending.append(("notify", str(name)[:64], str(text)[:2000]))
 
-    def _actor_is_mod():
+    def _actor_can(perm):
         if not actor_id or not bot.server_id:
             return False
         mem = _server_membership(session, actor_id, bot.server_id)
-        return bool(mem and mem.role in ("owner", "moderator"))
+        if mem and mem.role == "owner":
+            return True
+        if mem and mem.role == "moderator" and perm in (
+                "warn", "ban", "unban", "kick", "mute", "pin", "manage_channels"):
+            return True
+        return perm in _role_permissions_for(session, actor_id, bot.server_id)
 
     def _server_people():
         if not bot.server_id:
@@ -4216,7 +4674,7 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
         return people
 
     def warn(name, reason="No reason given"):
-        if not _actor_is_mod():
+        if not _actor_can("warn"):
             return "Only a moderator can warn people."
         pair, err = _match_named(name, _server_people())
         if err:
@@ -4237,7 +4695,7 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
         return user.name + " has been warned: " + reason
 
     def ban(name, reason="No reason given"):
-        if not _actor_is_mod():
+        if not _actor_can("ban"):
             return "Only a moderator can ban people."
         pair, err = _match_named(name, _server_people())
         if err:
@@ -4255,13 +4713,68 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
                 return "Only the owner can ban a moderator."
         reason = str(reason or "No reason given")[:300]
         session.delete(mem)
+        for link in session.exec(select(MemberRole).where(
+                MemberRole.server_id == bot.server_id, MemberRole.user_id == user.id)).all():
+            session.delete(link)
         session.add(ServerBan(
             server_id=bot.server_id, user_id=user.id, user_name=user.name[:64], reason=reason))
         session.commit()
         return user.name + " has been banned."
 
+    def kick(name):
+        if not _actor_can("kick"):
+            return "Only a moderator can remove people."
+        pair, err = _match_named(name, _server_people())
+        if err:
+            return err
+        if not pair:
+            return "No member named " + str(name).strip()
+        user, mem = pair
+        if mem.role == "owner":
+            return "The owner can't be removed."
+        if user.id == actor_id:
+            return "You can't remove yourself."
+        if mem.role == "moderator":
+            actor_mem = _server_membership(session, actor_id, bot.server_id)
+            if not actor_mem or actor_mem.role != "owner":
+                return "Only the owner can remove a moderator."
+        session.delete(mem)
+        for link in session.exec(select(MemberRole).where(
+                MemberRole.server_id == bot.server_id, MemberRole.user_id == user.id)).all():
+            session.delete(link)
+        session.commit()
+        return user.name + " has been removed."
+
+    def mute(name, minutes=10):
+        if not _actor_can("mute"):
+            return "Only a moderator can mute people."
+        pair, err = _match_named(name, _server_people())
+        if err:
+            return err
+        if not pair:
+            return "No member named " + str(name).strip()
+        user, mem = pair
+        if mem and mem.role == "owner":
+            return "The owner can't be muted this way."
+        if user.id == actor_id:
+            return "You can't mute yourself."
+        try:
+            minutes = int(minutes)
+        except (TypeError, ValueError):
+            minutes = 10
+        minutes = max(1, min(minutes, 1440))
+        until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        existing = session.exec(select(MutedUser).where(
+            MutedUser.user_id == user.id, MutedUser.channel_id == channel_id)).first()
+        if existing:
+            session.delete(existing)
+        session.add(MutedUser(
+            user_id=user.id, channel_id=channel_id, muted_until=until, muted_by=actor_id or 0))
+        session.commit()
+        return user.name + " is muted for " + str(minutes) + " minutes."
+
     def unban(name):
-        if not _actor_is_mod():
+        if not _actor_can("unban"):
             return "Only a moderator can unban people."
         if not bot.server_id:
             return "This bot is not in a server."
@@ -4340,8 +4853,9 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
 
     async def flush():
         if dirty["v"]:
-            bot.memory = json.dumps(memory)
-            session.add(bot)
+            target = getattr(bot, "_role", None) or bot
+            target.memory = json.dumps(memory)
+            session.add(target)
             session.commit()
         for kind, target, text in pending:
             if not text or not str(text).strip():
@@ -4360,11 +4874,68 @@ def _script_actions(bot: Bot, channel_id: Optional[int], session: Session, actor
 
     return {
         "reply": reply, "say": say, "say_in": say_in, "notify": notify,
-        "warn": warn, "ban": ban, "unban": unban,
+        "warn": warn, "ban": ban, "unban": unban, "kick": kick, "mute": mute,
         "members": members, "channels": channels, "recent": recent,
         "remember": remember, "recall": recall, "forget": forget,
         "len": len, "str": str, "int": int, "range": safe_range, "min": min, "max": max, "abs": abs,
     }, flush
+
+
+class _RoleScript:
+    """Lets a coded role use the same helpers as a bot."""
+    def __init__(self, role: ServerRole, channel_id: Optional[int]):
+        self.id = role.id
+        self.name = role.name
+        self.server_id = role.server_id
+        self.home_channel_id = channel_id
+        self.memory = role.memory or "{}"
+        self.avatar = "🎭"
+        self._role = role
+
+
+async def _run_role_joins(server_id: int, name: str) -> None:
+    with Session(engine) as session:
+        roles = session.exec(select(ServerRole).where(
+            ServerRole.server_id == server_id, ServerRole.script != "")).all()
+        for role in roles:
+            if "on_join" not in (role.script or ""):
+                continue
+            runner = _RoleScript(role, None)
+            helpers, flush = _script_actions(runner, None, session, None)
+            try:
+                botcode.run_join(role.script, name, helpers)
+            except botcode.ScriptError as exc:
+                log.warning("Role %s script error: %s", role.name, exc)
+                continue
+            await flush()
+
+
+async def _run_role_scripts(channel_id: int, sender_id: int, sender_name: str, content: str) -> None:
+    with Session(engine) as session:
+        channel = session.get(Channel, channel_id)
+        if not channel or not channel.server_id or not sender_id:
+            return
+        held = {link.role_id for link in session.exec(select(MemberRole).where(
+            MemberRole.server_id == channel.server_id, MemberRole.user_id == sender_id)).all()}
+        if not held:
+            return
+        role_name = "member"
+        mem = _server_membership(session, sender_id, channel.server_id)
+        if mem:
+            role_name = mem.role
+        roles = session.exec(select(ServerRole).where(ServerRole.server_id == channel.server_id)).all()
+        for role in roles:
+            if role.id not in held or "on_message" not in (role.script or ""):
+                continue
+            runner = _RoleScript(role, channel_id)
+            helpers, flush = _script_actions(runner, channel_id, session, sender_id)
+            try:
+                botcode.run_message(
+                    role.script, botcode.Msg(content, sender_name, channel.name, role_name), helpers)
+            except botcode.ScriptError as exc:
+                log.warning("Role %s script error: %s", role.name, exc)
+                continue
+            await flush()
 
 
 async def _run_bot_joins(server_id: int, name: str) -> None:
@@ -4439,6 +5010,7 @@ async def _handle_bot_messages(channel_id: int, sender_id: int, sender_name: str
     if not text:
         return
     await _run_bot_scripts(channel_id, sender_id, sender_name, text)
+    await _run_role_scripts(channel_id, sender_id, sender_name, text)
     low = text.lower()
     with Session(engine) as session:
         channel = session.get(Channel, channel_id)

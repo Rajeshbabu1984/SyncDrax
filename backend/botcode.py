@@ -166,3 +166,20 @@ def run_named(source: str, name: str, helpers: dict) -> None:
     fn = locs.get(name)
     if callable(fn):
         _limited(fn)
+
+
+def run_permissions(source: str) -> list:
+    """Return the list from permissions(), or [] when the role doesn't define one."""
+    if not (source or "").strip() or "permissions" not in function_names(source):
+        return []
+    locs = _load(source, {})
+    fn = locs.get("permissions")
+    if not callable(fn):
+        return []
+    value = _limited(fn)
+    if isinstance(value, str) or not isinstance(value, (list, tuple, set)):
+        raise ScriptError("permissions() must return a list of names")
+    found = []
+    for item in list(value)[:30]:
+        found.append(str(item).strip().lower()[:40])
+    return found

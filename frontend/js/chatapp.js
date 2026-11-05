@@ -58,6 +58,15 @@ let ws            = null;
 let channels      = [];      // [{id, name, description, created_by}]
 let servers       = [];      // [{id, name, is_home, role}]
 let activeServerId = null;
+let voiceChannelId = null;
+let voiceRtc = null;
+let voiceStream = null;
+let voiceMuted = false;
+let voiceSeats = {};
+let voiceHeartbeat = null;
+let serverRoles = [];
+let canAssignRoles = false;
+let canCodeRoles = false;
 let activeType    = null;    // 'channel' | 'dm'
 let activeId      = null;    // channel id or user id
 let _msgEpoch     = 0;       // bumps whenever the open chat changes, so a slow load can't paint the previous room
@@ -319,6 +328,13 @@ function wsSend(obj) {
 function handleServerMsg(msg) {
   console.log('[chat-ws] handleServerMsg:', msg.type, 'activeType:', activeType, 'activeId:', activeId);
   switch (msg.type) {
+
+    case 'voice': {
+      if (Number(msg.server_id) !== Number(activeServerId)) break;
+      voiceSeats[msg.channel_id] = msg.members || [];
+      renderChannelList();
+      break;
+    }
 
     case 'channel_message': {
       const m = msg.message;
@@ -825,9 +841,16 @@ async function openServerMembers() {
   document.getElementById('serverMembersOverlay').classList.remove('hidden');
   const list = document.getElementById('serverMembersList');
   list.innerHTML = '<div style="color:var(--text-muted);font-size:.85rem;">Loading…</div>';
-  const res = await authFetch(`/servers/${srv.id}/members`);
-  if (!res.ok) { list.textContent = 'Could not load members'; return; }
-  const members = await res.json();
+  const [memRes, roleRes] = await Promise.all([
+    authFetch(`/servers/${srv.id}/members`),
+    authFetch(`/servers/${srv.id}/roles`),
+  ]);
+  if (!memRes.ok) { list.textContent = 'Could not load members'; return; }
+  const members = await memRes.json();
+  const roleData = roleRes.ok ? await roleRes.json() : {};
+  serverRoles = Array.isArray(roleData) ? roleData : (roleData.roles || []);
+  canAssignRoles = !!roleData.can_assign;
+  canCodeRoles = !!roleData.can_code;
   list.innerHTML = '';
   members.forEach(m => {
     const line = document.createElement('div');
@@ -836,6 +859,16 @@ async function openServerMembers() {
     name.style.flex = '1';
     name.textContent = m.name;
     line.appendChild(name);
+    const canBan = srv.role === 'owner' || srv.role === 'moderator';
+    if (m.roles && m.roles.length) {
+      m.roles.forEach(r => {
+        const chip = document.createElement('span');
+        chip.textContent = r.name;
+        const color = /^#[0-9a-f]{6}$/i.test(r.color || '') ? r.color : '#a78bfa';
+        chip.style.cssText = `font-size:.68rem;font-weight:700;color:${color};`;
+        line.appendChild(chip);
+      });
+    }
     if (srv.role === 'owner' && m.role !== 'owner') {
       const sel = document.createElement('select');
       sel.className = 'modal-input';
@@ -855,20 +888,36 @@ async function openServerMembers() {
       kick.textContent = 'Remove';
       kick.addEventListener('click', () => removeServerMember(srv.id, m));
       line.appendChild(kick);
+      if (canBan) line.appendChild(banMemberButton(srv, m));
     } else if (srv.role === 'moderator' && m.role === 'member') {
       const kick = document.createElement('button');
       kick.className = 'del-bot-btn';
       kick.textContent = 'Remove';
       kick.addEventListener('click', () => removeServerMember(srv.id, m));
       line.appendChild(kick);
+      line.appendChild(banMemberButton(srv, m));
     } else {
       const role = document.createElement('span');
       role.style.cssText = 'font-size:.75rem;color:var(--text-muted);';
       role.textContent = m.role;
       line.appendChild(role);
     }
+    if ((canRename || canAssignRoles) && serverRoles.length && m.role !== 'owner') {
+      const held = new Set((m.roles || []).map(r => r.id));
+      serverRoles.forEach(role => {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.textContent = held.has(role.id) ? '✓ ' + role.name : role.name;
+        toggle.title = held.has(role.id) ? 'Remove this role' : 'Give this role';
+        toggle.style.cssText = 'font-size:.68rem;border-radius:6px;padding:2px 6px;cursor:pointer;border:1px solid var(--border);background:var(--bg-input);color:var(--text);';
+        toggle.addEventListener('click', () => toggleMemberRole(srv, m, role, !held.has(role.id)));
+        line.appendChild(toggle);
+      });
+    }
     list.appendChild(line);
   });
+  renderServerBans(srv);
+  renderServerRoles(srv, members);
 }
 
 async function renameActiveServer() {
@@ -882,6 +931,173 @@ async function renameActiveServer() {
   renderServerRail();
   document.getElementById('serverMembersTitle').textContent = data.name;
   showToast('Server renamed');
+}
+
+function banMemberButton(srv, member) {
+  const btn = document.createElement('button');
+  btn.className = 'del-bot-btn';
+  btn.textContent = 'Ban';
+  btn.addEventListener('click', async () => {
+    const reason = prompt(`Ban ${member.name} from this server?`, '') ;
+    if (reason === null) return;
+    const res = await authFetch(`/servers/${srv.id}/bans`, 'POST', { user_id: member.user_id, reason });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.detail || 'Could not ban them', 'error'); return; }
+    showToast(`${member.name} is banned`);
+    openServerMembers();
+  });
+  return btn;
+}
+
+async function toggleMemberRole(srv, member, role, give) {
+  const held = new Set((member.roles || []).map(r => r.id));
+  if (give) held.add(role.id); else held.delete(role.id);
+  const res = await authFetch(`/servers/${srv.id}/members/${member.user_id}/roles`, 'PUT', { role_ids: [...held] });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not update roles', 'error'); return; }
+  openServerMembers();
+}
+
+async function renderServerBans(srv) {
+  const wrap = document.getElementById('serverBansWrap');
+  const list = document.getElementById('serverBansList');
+  if (!wrap || !list) return;
+  const res = await authFetch(`/servers/${srv.id}/bans`);
+  if (!res.ok) { wrap.style.display = 'none'; return; }
+  const bans = await res.json();
+  wrap.style.display = '';
+  list.innerHTML = '';
+  if (!bans.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:var(--text-muted);font-size:.82rem;';
+    empty.textContent = 'Nobody is banned.';
+    list.appendChild(empty);
+    return;
+  }
+  bans.forEach(b => {
+    const line = document.createElement('div');
+    line.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);';
+    const name = document.createElement('span');
+    name.style.flex = '1';
+    name.textContent = b.reason ? `${b.name} — ${b.reason}` : b.name;
+    line.appendChild(name);
+    const btn = document.createElement('button');
+    btn.className = 'modal-btn secondary';
+    btn.style.cssText = 'font-size:.75rem;padding:4px 10px;';
+    btn.textContent = 'Unban';
+    btn.addEventListener('click', async () => {
+      const r = await authFetch(`/servers/${srv.id}/bans/${b.user_id}`, 'DELETE');
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(data.detail || 'Could not unban them', 'error'); return; }
+      showToast(`${b.name} has been unbanned`);
+      openServerMembers();
+    });
+    line.appendChild(btn);
+    list.appendChild(line);
+  });
+}
+
+let editingRoleId = null;
+
+async function renderServerRoles(srv) {
+  const list = document.getElementById('serverRolesList');
+  const editor = document.getElementById('roleEditor');
+  if (!list) return;
+  if (editingRoleId && !serverRoles.some(r => r.id === editingRoleId)) editingRoleId = null;
+  const canCode = canCodeRoles || srv.role === 'owner' || srv.role === 'moderator';
+  list.innerHTML = '';
+  if (canCode) {
+    const create = document.createElement('div');
+    create.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+    const nameInput = document.createElement('input');
+    nameInput.className = 'modal-input';
+    nameInput.placeholder = 'New role name';
+    nameInput.maxLength = 32;
+    nameInput.style.flex = '1';
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.value = '#7c3aed';
+    const add = document.createElement('button');
+    add.className = 'modal-btn primary';
+    add.style.cssText = 'flex:none;padding:8px 12px;';
+    add.textContent = 'Create';
+    add.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      if (!name) { showToast('Give the role a name'); return; }
+      const res = await authFetch(`/servers/${srv.id}/roles`, 'POST', {
+        name, color: color.value,
+        script: 'def permissions():\n    return []\n',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showToast(data.detail || 'Could not create the role', 'error'); return; }
+      showToast(`Created ${data.name}`);
+      openServerMembers();
+    });
+    create.appendChild(nameInput);
+    create.appendChild(color);
+    create.appendChild(add);
+    list.appendChild(create);
+  }
+  if (!serverRoles.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:var(--text-muted);font-size:.82rem;';
+    empty.textContent = canCode ? 'No roles yet. Create one and code what it can do.' : 'No custom roles yet.';
+    list.appendChild(empty);
+  }
+  serverRoles.forEach(role => {
+    const line = document.createElement('div');
+    line.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;';
+    const swatch = document.createElement('span');
+    const color = /^#[0-9a-f]{6}$/i.test(role.color || '') ? role.color : '#7c3aed';
+    swatch.style.cssText = `width:12px;height:12px;border-radius:50%;background:${color};flex:none;`;
+    const label = document.createElement('span');
+    label.style.flex = '1';
+    label.textContent = role.name;
+    line.appendChild(swatch);
+    line.appendChild(label);
+    if (canCode) {
+      const codeBtn = document.createElement('button');
+      codeBtn.className = 'modal-btn secondary';
+      codeBtn.style.cssText = 'font-size:.75rem;padding:4px 10px;';
+      codeBtn.textContent = 'Code';
+      codeBtn.addEventListener('click', () => {
+        editingRoleId = role.id;
+        const box = document.getElementById('roleScript');
+        if (box) box.value = role.script || '';
+        if (editor) editor.style.display = '';
+      });
+      const del = document.createElement('button');
+      del.className = 'del-bot-btn';
+      del.textContent = 'Delete';
+      del.addEventListener('click', async () => {
+        if (!confirm(`Delete the ${role.name} role?`)) return;
+        const res = await authFetch(`/servers/${srv.id}/roles/${role.id}`, 'DELETE');
+        if (!res.ok) { showToast('Could not delete the role', 'error'); return; }
+        if (editingRoleId === role.id && editor) editor.style.display = 'none';
+        openServerMembers();
+      });
+      line.appendChild(codeBtn);
+      line.appendChild(del);
+    }
+    list.appendChild(line);
+  });
+  if (editor) editor.style.display = canCode && editingRoleId ? '' : 'none';
+  const save = document.getElementById('saveRoleScriptBtn');
+  if (save && !save.dataset.bound) {
+    save.dataset.bound = '1';
+    save.addEventListener('click', saveRoleScript);
+  }
+}
+
+async function saveRoleScript() {
+  const srv = servers.find(s => s.id === activeServerId);
+  if (!srv || !editingRoleId) return;
+  const script = document.getElementById('roleScript').value;
+  const res = await authFetch(`/servers/${srv.id}/roles/${editingRoleId}`, 'PUT', { script });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not save the role', 'error'); return; }
+  showToast('Role code saved');
+  openServerMembers();
 }
 
 async function removeServerMember(serverId, member) {
@@ -911,7 +1127,17 @@ async function loadChannels() {
   const res = await authFetch('/chat/channels' + q);
   if (!res.ok) return;
   channels = await res.json();
+  await loadVoiceSeats();
   renderChannelList();
+}
+
+async function loadVoiceSeats() {
+  voiceSeats = {};
+  if (!activeServerId) return;
+  const res = await authFetch(`/servers/${activeServerId}/voice`);
+  if (!res.ok) return;
+  const data = await res.json();
+  Object.keys(data).forEach(id => { voiceSeats[id] = data[id]; });
 }
 
 // renderChannelList is defined later (with category support)
@@ -1809,10 +2035,13 @@ function closeAddChannelModal() {
 async function createChannel() {
   const rawName = document.getElementById('channelNameInput').value.trim();
   const desc    = document.getElementById('channelDescInput').value.trim();
+  const channelType = document.getElementById('channelTypeInput')?.value || 'text';
   if (!rawName) { showToast('Enter a channel name'); return; }
   if (!activeServerId) { showToast('Create or pick a server first'); return; }
-  const fullName = `${pendingEmoji} ${rawName}`;
-  const res = await authFetch('/chat/channels', 'POST', { name: fullName, description: desc, server_id: activeServerId });
+  const fullName = channelType === 'voice' ? rawName : `${pendingEmoji} ${rawName}`;
+  const res = await authFetch('/chat/channels', 'POST', {
+    name: fullName, description: desc, server_id: activeServerId, channel_type: channelType,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     console.error('[createChannel] failed:', res.status, err);
@@ -1823,7 +2052,8 @@ async function createChannel() {
   channels.push(ch);
   renderChannelList();
   closeAddChannelModal();
-  openChannel(ch);
+  if (ch.channel_type === 'voice') joinVoiceChannel(ch);
+  else openChannel(ch);
 }
 
 // ── DM modal ──────────────────────────────────────────────────────────────────
@@ -2028,27 +2258,57 @@ function renderChannelList() {
     const catUl = document.createElement('ul');
     catUl.className = 'category-channels channel-list';
     catUl.style.listStyle = 'none';
-    catChannels.forEach(ch => channelListEl.appendChild(_buildChannelLi(ch)));
+    catChannels.filter(ch => ch.channel_type !== 'voice').forEach(ch => channelListEl.appendChild(_buildChannelLi(ch)));
     // append to outer list for simplicity
   });
 
-  // Render uncategorized channels
-  uncategorized.forEach(ch => channelListEl.appendChild(_buildChannelLi(ch)));
+  // Render uncategorized text channels. Voice channels sit in their own section.
+  uncategorized.filter(ch => ch.channel_type !== 'voice').forEach(ch => channelListEl.appendChild(_buildChannelLi(ch)));
+  const voice = channels.filter(ch => ch.channel_type === 'voice');
+  if (voice.length) {
+    const header = document.createElement('li');
+    header.className = 'section-header';
+    header.textContent = 'Voice';
+    channelListEl.appendChild(header);
+    voice.forEach(ch => channelListEl.appendChild(_buildChannelLi(ch)));
+  }
 }
 
 function _buildChannelLi(ch) {
   const li = document.createElement('li');
-  li.className = `ch-item${activeType === 'channel' && activeId === ch.id ? ' active' : ''}${ch.archived ? ' ch-archived' : ''}`;
+  const inVoice = ch.channel_type === 'voice' && Number(voiceChannelId) === Number(ch.id);
+  li.className = `ch-item${ch.channel_type === 'voice' ? ' voice' : ''}${inVoice ? ' in-voice' : ''}${activeType === 'channel' && activeId === ch.id && ch.channel_type !== 'voice' ? ' active' : ''}${ch.archived ? ' ch-archived' : ''}`;
   const roIcon  = ch.readonly  ? `<i class="fa-solid fa-lock ch-readonly-ico" title="Read-only" style="font-size:.65rem;color:var(--text-muted);margin-left:4px;opacity:.7;"></i>` : '';
   const arcIcon = ch.archived  ? `<i class="fa-solid fa-box-archive ch-archive-ico" title="Archived" style="font-size:.65rem;color:var(--text-muted);margin-left:4px;opacity:.7;"></i>` : '';
-  li.innerHTML = `<span class="ch-prefix">${ch.name.charAt(0) === '#' ? '' : '#'}</span><span class="ch-name">${esc(ch.name)}</span>${roIcon}${arcIcon}`;
+  const prefix = ch.channel_type === 'voice' ? '🔊' : (ch.name.charAt(0) === '#' ? '' : '#');
+  li.innerHTML = `<span class="ch-prefix">${prefix}</span><span class="ch-name">${esc(ch.name)}</span>${roIcon}${arcIcon}`;
   if (ch.created_by === user.id) {
-    li.innerHTML += `<button class="ch-del-btn" onclick="deleteChannel(event,${ch.id});" title="Delete">✕</button>`;
+    const del = document.createElement('button');
+    del.className = 'ch-del-btn';
+    del.title = 'Delete';
+    del.textContent = '✕';
+    del.addEventListener('click', (event) => deleteChannel(event, ch.id));
+    li.appendChild(del);
   }
-  if (unread[ch.id]) {
-    li.innerHTML += `<span class="ch-badge">${unread[ch.id]}</span>`;
+  if (unread[ch.id] && ch.channel_type !== 'voice') {
+    const badge = document.createElement('span');
+    badge.className = 'ch-badge';
+    badge.textContent = String(unread[ch.id]);
+    li.appendChild(badge);
   }
-  li.addEventListener('click', () => openChannel(ch));
+  if (ch.channel_type === 'voice') {
+    const who = (voiceSeats[ch.id] || voiceSeats[String(ch.id)] || []).map(p => p.name).filter(Boolean);
+    if (who.length) {
+      const names = document.createElement('span');
+      names.className = 'voice-who';
+      names.textContent = who.join(', ');
+      li.appendChild(names);
+    }
+  }
+  li.addEventListener('click', () => {
+    if (ch.channel_type === 'voice') joinVoiceChannel(ch);
+    else openChannel(ch);
+  });
   return li;
 }
 
@@ -4364,6 +4624,116 @@ async function loadAndShowBadges(userId, containerEl) {
       <i class="${b.icon}"></i> ${esc(b.label)}
     </span>`).join('');
 }
+
+// ── Voice channels ────────────────────────────────────────────────────────────
+function showVoiceBar(ch) {
+  const bar = document.getElementById('voiceBar');
+  const text = document.getElementById('voiceBarText');
+  if (text) text.textContent = ch ? ch.name : 'Voice';
+  if (bar) bar.classList.add('visible');
+  const mute = document.getElementById('voiceMuteBtn');
+  if (mute) mute.textContent = voiceMuted ? 'Unmute' : 'Mute';
+}
+
+async function leaveVoice() {
+  const channelId = voiceChannelId;
+  if (voiceHeartbeat) { clearInterval(voiceHeartbeat); voiceHeartbeat = null; }
+  if (voiceRtc) {
+    voiceRtc.disconnect();
+    voiceRtc = null;
+  }
+  if (voiceStream) {
+    voiceStream.getTracks().forEach(t => t.stop());
+    voiceStream = null;
+  }
+  voiceChannelId = null;
+  voiceMuted = false;
+  document.getElementById('voiceBar')?.classList.remove('visible');
+  if (channelId) {
+    await authFetch(`/channels/${channelId}/voice/leave`, 'POST');
+  }
+  renderChannelList();
+}
+
+async function joinVoiceChannel(ch) {
+  if (!ch || ch.channel_type !== 'voice') return;
+  if (Number(voiceChannelId) === Number(ch.id)) return;
+  await leaveVoice();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (err) {
+    showToast('Allow the microphone to join the voice channel', 'error');
+    return;
+  }
+  const res = await authFetch(`/channels/${ch.id}/voice/join`, 'POST');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    stream.getTracks().forEach(t => t.stop());
+    showToast(data.detail || 'Could not join the voice channel', 'error');
+    return;
+  }
+  voiceStream = stream;
+  voiceChannelId = ch.id;
+  voiceMuted = false;
+  voiceSeats[ch.id] = data.members || [];
+  if (typeof SyncTactRTC === 'function') {
+    voiceRtc = new SyncTactRTC({
+      roomCode: data.room_code,
+      displayName: user.name,
+      onRoomFull: () => {
+        showToast('That voice channel is full', 'error');
+        leaveVoice();
+      },
+      onPeerStream: (_id, remote) => {
+        let audio = document.getElementById('voiceAudio-' + _id);
+        if (!audio) {
+          audio = document.createElement('audio');
+          audio.id = 'voiceAudio-' + _id;
+          audio.autoplay = true;
+          audio.dataset.voice = '1';
+          document.body.appendChild(audio);
+        }
+        audio.srcObject = remote;
+      },
+      onPeerLeft: (peerId) => {
+        document.getElementById('voiceAudio-' + peerId)?.remove();
+      },
+    });
+    try {
+      await voiceRtc.connect(stream);
+    } catch (err) {
+      showToast('Could not connect to the voice channel', 'error');
+      await leaveVoice();
+      return;
+    }
+  }
+  showVoiceBar(ch);
+  renderChannelList();
+  voiceHeartbeat = setInterval(() => {
+    if (voiceChannelId) authFetch(`/channels/${voiceChannelId}/voice/heartbeat`, 'POST');
+  }, 20000);
+}
+
+function toggleVoiceMute() {
+  if (!voiceStream) return;
+  voiceMuted = !voiceMuted;
+  voiceStream.getAudioTracks().forEach(t => { t.enabled = !voiceMuted; });
+  const mute = document.getElementById('voiceMuteBtn');
+  if (mute) mute.textContent = voiceMuted ? 'Unmute' : 'Mute';
+}
+
+document.getElementById('voiceLeaveBtn')?.addEventListener('click', () => leaveVoice());
+document.getElementById('voiceMuteBtn')?.addEventListener('click', toggleVoiceMute);
+window.addEventListener('pagehide', () => {
+  if (!voiceChannelId || !token) return;
+  fetch(`${API}/channels/${voiceChannelId}/voice/leave`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    keepalive: true,
+  });
+  if (voiceRtc) voiceRtc.disconnect();
+});
 
 // ── Video / Voice Call ────────────────────────────────────────────────────────
 async function startCall() {

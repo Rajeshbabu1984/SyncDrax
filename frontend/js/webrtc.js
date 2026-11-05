@@ -197,6 +197,7 @@ class SyncTactRTC {
       }
 
       case 'room_full': {
+        if (this.onRoomFull) { this.onRoomFull(); break; }
         alert(`This meeting is full (max ${MAX_PARTICIPANTS} participants).`);
         window.location.href = 'index.html';
         break;
