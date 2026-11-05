@@ -854,12 +854,12 @@ async function openServerMembers() {
   list.innerHTML = '';
   members.forEach(m => {
     const line = document.createElement('div');
-    line.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);';
+    line.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;';
     const name = document.createElement('span');
     name.style.flex = '1';
     name.textContent = m.name;
     line.appendChild(name);
-    const canBan = srv.role === 'owner' || srv.role === 'moderator';
+    const canBan = srv.role === 'owner' || srv.role === 'moderator' || srv.owner_id === user.id;
     if (m.roles && m.roles.length) {
       m.roles.forEach(r => {
         const chip = document.createElement('span');
@@ -1503,7 +1503,8 @@ const SLASH_COMMANDS = [
   { cmd: '/warn',      icon: '⚠️', desc: '/warn @user <reason> — issue a warning (mod)' },
   { cmd: '/mute',      icon: '🔇', desc: '/mute @user [minutes] — mute a user (mod)' },
   { cmd: '/kick',      icon: '👢', desc: '/kick @user — remove user from channel (mod)' },
-  { cmd: '/ban',       icon: '🔨', desc: '/ban @user — ban user from server (admin)' },
+  { cmd: '/ban',       icon: '🔨', desc: '/ban name [reason] — ban from this server (owner/mod)' },
+  { cmd: '/unban',     icon: '🔓', desc: '/unban name — let a banned person back in' },
   { cmd: '/userinfo',  icon: '🪪', desc: '/userinfo [@user] — show user profile & stats' },
   { cmd: '/serverinfo',icon: '🖥️', desc: 'Show server stats' },
   { cmd: '/giphy',     icon: '🎞️', desc: '/giphy search term — post a GIF' },
@@ -1721,17 +1722,55 @@ async function executeSlashCommand(text) {
     return;
   }
 
-  // ── /ban ──────────────────────────────────────────────────
-  if (cmd === '/ban') {
-    if (user.role !== 'admin') { showToast('⛔ Admins only'); return; }
-    const mention    = parts[1];
-    const targetName = mention?.replace(/^@/, '').toLowerCase();
-    const target = allUsers.find(u => u.name.toLowerCase() === targetName);
-    if (!target) { showToast('Usage: /ban @user'); return; }
-    if (!confirm(`Permanently ban ${target.name}?`)) return;
-    const res = await authFetch(`/mod/ban/${target.id}`, { method: 'POST' });
-    if (res.ok) showToast(`🔨 ${target.name} banned`);
-    else showToast('Ban failed', 'error');
+function _matchPerson(people, query) {
+  const raw = String(query || '').trim().replace(/^@/, '').replace(/\s+/g, ' ');
+  const want = raw.toLowerCase();
+  if (!want) return null;
+  const named = (people || []).filter(p => p && p.name);
+  const exact = named.filter(p => p.name.toLowerCase() === want);
+  if (exact.length === 1) return { person: exact[0], rest: '' };
+  if (exact.length > 1) return { ambiguous: true };
+  const headed = named.filter(p => want.startsWith(p.name.toLowerCase() + ' '));
+  if (headed.length) {
+    headed.sort((a, b) => b.name.length - a.name.length);
+    const bestLen = headed[0].name.length;
+    const tied = headed.filter(p => p.name.length === bestLen);
+    if (tied.length > 1) return { ambiguous: true };
+    return { person: headed[0], rest: raw.slice(headed[0].name.length).trim() };
+  }
+  const word = named.filter(p => p.name.toLowerCase().startsWith(want + ' '));
+  if (word.length === 1) return { person: word[0], rest: '' };
+  if (word.length > 1) return { ambiguous: true };
+  return null;
+}
+
+  // ── /ban and /unban ───────────────────────────────────────
+  if (cmd === '/ban' || cmd === '/unban') {
+    const srv = servers.find(s => s.id === activeServerId);
+    const allowed = srv && (srv.role === 'owner' || srv.role === 'moderator' || srv.owner_id === user.id);
+    if (!srv || activeType !== 'channel') { showToast('Open a channel in your server first'); return; }
+    if (!allowed) { showToast('Only the server owner or a moderator can do that'); return; }
+    const rest = text.replace(/^\/(?:un)?ban\s*/i, '').trim();
+    if (!rest) { showToast(cmd === '/ban' ? 'Usage: /ban name [reason]' : 'Usage: /unban name'); return; }
+    if (cmd === '/unban') {
+      const listRes = await authFetch(`/servers/${srv.id}/bans`);
+      const bans = listRes.ok ? await listRes.json() : null;
+      if (!listRes.ok) { showToast('Could not load the ban list', 'error'); return; }
+      const found = _matchPerson(bans, rest);
+      if (!found || found.ambiguous) { showToast(found && found.ambiguous ? 'More than one person matches. Use the full name.' : 'Nobody banned matches that name'); return; }
+      const res = await authFetch(`/servers/${srv.id}/bans/${found.person.user_id}`, 'DELETE');
+      const data = await res.json().catch(() => ({}));
+      showToast(res.ok ? `${found.person.name} has been unbanned` : (data.detail || 'Unban failed'), res.ok ? '' : 'error');
+      return;
+    }
+    const listRes = await authFetch(`/servers/${srv.id}/members`);
+    if (!listRes.ok) { showToast('Could not load members', 'error'); return; }
+    const found = _matchPerson(await listRes.json(), rest);
+    if (!found || found.ambiguous) { showToast(found && found.ambiguous ? 'More than one person matches. Use the full name.' : 'No member with that name'); return; }
+    if (!confirm(`Ban ${found.person.name} from this server?`)) return;
+    const res = await authFetch(`/servers/${srv.id}/bans`, 'POST', { user_id: found.person.user_id, reason: found.rest || '' });
+    const data = await res.json().catch(() => ({}));
+    showToast(res.ok ? `${found.person.name} is banned` : (data.detail || 'Ban failed'), res.ok ? '' : 'error');
     return;
   }
 

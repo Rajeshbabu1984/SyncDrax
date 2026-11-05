@@ -911,9 +911,25 @@ def _server_membership(session: Session, user_id: int, server_id: int) -> Option
         ServerMember.server_id == server_id, ServerMember.user_id == user_id)).first()
 
 
+def _server_role(session: Session, user_id: int, server_id: Optional[int]) -> str:
+    """Membership role. The account stored as the server owner is always owner."""
+    if not user_id or not server_id:
+        return "member"
+    srv = session.get(ChatServer, server_id)
+    mem = _server_membership(session, user_id, server_id)
+    if srv and srv.owner_id == user_id:
+        if mem and mem.role != "owner":
+            mem.role = "owner"
+            session.add(mem)
+            session.commit()
+        return "owner"
+    return mem.role if mem else "member"
+
+
 def _can_manage_server(session: Session, user: User, server_id: int) -> bool:
-    mem = _server_membership(session, user.id, server_id)
-    return bool(mem and mem.role in ("owner", "moderator")) or _is_staff(user)
+    if _server_role(session, user.id, server_id) in ("owner", "moderator"):
+        return True
+    return _is_staff(user)
 
 
 # Powers a coded role can grant. Anything else in permissions() is ignored.
@@ -983,7 +999,12 @@ def _is_server_member(session: Session, user_id: int, server_id: Optional[int]) 
         return True
     srv = session.get(ChatServer, server_id)
     if srv and srv.is_home and user_id:
-        _join_server(session, server_id, user_id)
+        role = "member"
+        if not srv.owner_id:
+            srv.owner_id = user_id
+            session.add(srv)
+            role = "owner"
+        _join_server(session, server_id, user_id, role)
         session.commit()
         return True
     return False
@@ -1013,8 +1034,18 @@ def _ensure_home_server() -> None:
         for ch in orphans:
             ch.server_id = home.id
             session.add(ch)
+        if not home.owner_id:
+            first = session.exec(select(User).where(User.role != "bot").order_by(User.id)).first()
+            if first:
+                home.owner_id = first.id
+                session.add(home)
         if home.owner_id:
-            _join_server(session, home.id, home.owner_id, "owner")
+            mem = _server_membership(session, home.owner_id, home.id)
+            if mem and mem.role != "owner":
+                mem.role = "owner"
+                session.add(mem)
+            else:
+                _join_server(session, home.id, home.owner_id, "owner")
         session.commit()
 
 
@@ -3334,7 +3365,13 @@ def list_servers(
     rows = session.exec(select(ChatServer).where(ChatServer.id.in_(list(ids))).order_by(ChatServer.id)).all()
     roles = {m.server_id: m.role for m in session.exec(
         select(ServerMember).where(ServerMember.user_id == current_user.id)).all()}
-    return [_server_dict(s, roles.get(s.id, "member")) for s in rows]
+    out = []
+    for s in rows:
+        role = "owner" if s.owner_id == current_user.id else roles.get(s.id, "member")
+        if role == "owner":
+            _server_role(session, current_user.id, s.id)
+        out.append(_server_dict(s, role))
+    return out
 
 
 @app.post("/servers", status_code=201)
@@ -4919,10 +4956,7 @@ async def _run_role_scripts(channel_id: int, sender_id: int, sender_name: str, c
             MemberRole.server_id == channel.server_id, MemberRole.user_id == sender_id)).all()}
         if not held:
             return
-        role_name = "member"
-        mem = _server_membership(session, sender_id, channel.server_id)
-        if mem:
-            role_name = mem.role
+        role_name = _server_role(session, sender_id, channel.server_id)
         roles = session.exec(select(ServerRole).where(ServerRole.server_id == channel.server_id)).all()
         for role in roles:
             if role.id not in held or "on_message" not in (role.script or ""):
@@ -4956,11 +4990,7 @@ async def _run_bot_scripts(channel_id: int, sender_id: int, sender_name: str, co
         channel = session.get(Channel, channel_id)
         if not channel:
             return
-        role = "member"
-        if channel.server_id:
-            mem = _server_membership(session, sender_id, channel.server_id)
-            if mem:
-                role = mem.role
+        role = _server_role(session, sender_id, channel.server_id) if channel.server_id else "member"
         bots = session.exec(select(Bot).where(Bot.script != "")).all()
         for bot in bots:
             if bot.server_id and bot.server_id != channel.server_id:
