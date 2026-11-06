@@ -4381,7 +4381,9 @@ def save_bot_script(
         raise HTTPException(404, "Bot not found")
     if not _can_code_bot(session, current_user, bot):
         raise HTTPException(403, "Only the server owner or a moderator can code this bot. Members cannot.")
-    script = (body.script or "")[:8000]
+    script = body.script or ""
+    if len(script) > 32000:
+        raise HTTPException(400, "That file is too long. Keep the bot under 32,000 characters.")
     try:
         botcode.function_names(script)
     except botcode.ScriptError as exc:

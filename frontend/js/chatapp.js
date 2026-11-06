@@ -3511,21 +3511,68 @@ function loadBotJobs() {
 }
 
 document.getElementById('scriptBotSelect')?.addEventListener('change', showBotScript);
-document.getElementById('saveBotScriptBtn')?.addEventListener('click', async () => {
+
+async function saveOpenBotScript(scriptText) {
   const botId = document.getElementById('scriptBotSelect').value;
-  if (!botId) { showToast('Create a bot first'); return; }
+  if (!botId) { showToast('Create a bot first'); return false; }
+  const script = scriptText != null ? scriptText : document.getElementById('botScript').value;
+  if (script.length > 32000) { showToast('That file is too long. Keep it under 32,000 characters.', 'error'); return false; }
   const res = await authFetch(`/bots/${botId}/script`, 'PUT', {
-    script: document.getElementById('botScript').value,
+    script,
     home_channel_id: Number(document.getElementById('scriptChannelSelect').value) || null,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { showToast(data.detail || 'Could not save the code', 'error'); return; }
+  if (!res.ok) { showToast(data.detail || 'Could not save the code', 'error'); return false; }
   const bot = botsData.find(b => String(b.id) === String(botId));
   if (bot) {
     bot.script = data.script;
     bot.home_channel_id = data.home_channel_id;
   }
-  showToast('Bot code saved');
+  document.getElementById('botScript').value = data.script || '';
+  return true;
+}
+
+document.getElementById('saveBotScriptBtn')?.addEventListener('click', async () => {
+  if (await saveOpenBotScript()) showToast('Bot code saved');
+});
+
+document.getElementById('importBotScriptBtn')?.addEventListener('click', () => {
+  document.getElementById('botScriptFile')?.click();
+});
+
+document.getElementById('botScriptFile')?.addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let text = '';
+  try { text = (await file.text()).replace(/^\uFEFF/, ''); }
+  catch { showToast('Could not read that file', 'error'); return; }
+  if (!document.getElementById('scriptBotSelect').value) {
+    if (!activeServerId) { showToast('Open your server first'); return; }
+    const name = file.name.replace(/\.py$/i, '').replace(/[^\w\- ]+/g, ' ').trim().slice(0, 40) || 'Bot';
+    const created = await authFetch('/bots', 'POST', { name, avatar: selectedBotAvatar, server_id: activeServerId });
+    if (!created.ok) { const err = await created.json().catch(() => ({})); showToast(err.detail || 'Create failed'); return; }
+    const bot = await created.json();
+    botsData.push(bot);
+    renderBotsModal();
+    loadBotJobs();
+    document.getElementById('scriptBotSelect').value = String(bot.id);
+  }
+  document.getElementById('botScript').value = text;
+  if (await saveOpenBotScript(text)) showToast(`Imported ${file.name}`);
+});
+
+document.getElementById('downloadBotScriptBtn')?.addEventListener('click', () => {
+  const sel = document.getElementById('scriptBotSelect');
+  const bot = botsData.find(b => String(b.id) === sel.value);
+  const text = document.getElementById('botScript').value || '';
+  const blob = new Blob([text], { type: 'text/x-python' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  const safe = (bot?.name || 'bot').replace(/[^\w\-]+/g, '_').slice(0, 40) || 'bot';
+  link.download = safe + '.py';
+  link.click();
+  URL.revokeObjectURL(link.href);
 });
 
 window.copyBotWebhook = function(url, btn) {
