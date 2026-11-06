@@ -1819,13 +1819,37 @@ def list_events(channel_id: Optional[int] = None, current_user: User = Depends(g
     return out
 
 
+def _event_time(value: Optional[str], label: str) -> Optional[datetime]:
+    """Accept a browser datetime, with or without a timezone, and store it in UTC."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(400, f"{label} is not a valid date")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 @app.post("/events")
 def create_event(body: EventIn, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "Give the event a title")
+    starts_at = _event_time(body.starts_at, "Start time")
+    if not starts_at:
+        raise HTTPException(400, "Start time is required")
+    ends_at = _event_time(body.ends_at, "End time")
+    if ends_at and ends_at < starts_at:
+        raise HTTPException(400, "The end time is before the start time")
     e = CalendarEvent(
         channel_id=body.channel_id, creator_id=current_user.id, creator_name=current_user.name,
-        title=body.title[:200], description=body.description,
-        starts_at=datetime.fromisoformat(body.starts_at.replace("Z", "+00:00")),
-        ends_at=datetime.fromisoformat(body.ends_at.replace("Z", "+00:00")) if body.ends_at else None,
+        title=title[:200], description=(body.description or None),
+        starts_at=starts_at, ends_at=ends_at,
     )
     session.add(e); session.commit(); session.refresh(e)
     return {"id": e.id, "title": e.title, "starts_at": e.starts_at.isoformat()}

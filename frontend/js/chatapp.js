@@ -4615,16 +4615,29 @@ async function deleteEvent(id) {
   await authFetch(`/events/${id}`, { method: 'DELETE' });
   await loadEvents();
 }
+function eventInputToIso(value) {
+  if (!value) return null;
+  const withSeconds = value.length === 16 ? value + ':00' : value;
+  const parsed = new Date(withSeconds);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
 async function createCalendarEvent() {
   const title = document.getElementById('eventTitle').value.trim();
   const desc  = document.getElementById('eventDesc').value.trim();
-  const start = document.getElementById('eventStart').value;
-  const end   = document.getElementById('eventEnd').value;
+  const start = eventInputToIso(document.getElementById('eventStart').value);
+  const end   = eventInputToIso(document.getElementById('eventEnd').value);
   if (!title || !start) { showToast('Title and start time required', 'error'); return; }
-  const body = { title, description: desc || null, starts_at: new Date(start).toISOString(), channel_id: activeType === 'channel' ? activeId : null };
-  if (end) body.ends_at = new Date(end).toISOString();
-  const res = await authFetch('/events', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-  if (!res.ok) { showToast('Failed to create event', 'error'); return; }
+  if (document.getElementById('eventEnd').value && !end) { showToast('That end time is not valid', 'error'); return; }
+  const body = { title, description: desc || null, starts_at: start, channel_id: activeType === 'channel' ? activeId : null };
+  if (end) body.ends_at = end;
+  const res = await authFetch('/events', 'POST', body);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    showToast(err.detail || 'Failed to create event', 'error');
+    return;
+  }
   document.getElementById('eventTitle').value = '';
   document.getElementById('eventDesc').value  = '';
   document.getElementById('eventStart').value = '';
