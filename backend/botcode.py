@@ -5,7 +5,11 @@ dates, text, random, and so on. Modules that can read the server, run programs,
 or open network connections are refused.
 """
 import ast
+import asyncio
+import concurrent.futures
+import inspect
 import sys
+import threading
 import types
 
 # Standard-library modules a bot may import. Nothing here can run a program,
@@ -17,11 +21,33 @@ ALLOWED_MODULES = {
     "string", "textwrap", "unicodedata", "html", "difflib",
     "hashlib", "hmac", "base64", "binascii", "uuid",
     "copy", "enum", "pprint", "dataclasses",
-    "urllib.parse",
+    "urllib.parse", "asyncio",
 }
 
+# Names on asyncio that open a socket or start a program. A bot never gets these.
+_ASYNCIO_BLOCKED = {
+    "open_connection", "start_server", "open_unix_connection", "start_unix_server",
+    "create_subprocess_exec", "create_subprocess_shell",
+    "get_event_loop", "new_event_loop", "set_event_loop", "get_event_loop_policy",
+    "set_event_loop_policy", "BaseEventLoop", "SelectorEventLoop", "ProactorEventLoop",
+    "StreamReader", "StreamWriter", "StreamReaderProtocol",
+}
+
+_ASYNCIO_OK = (
+    "sleep", "wait", "wait_for", "gather", "shield", "as_completed", "timeout", "timeout_at",
+    "Queue", "PriorityQueue", "LifoQueue", "Event", "Lock", "Condition",
+    "Semaphore", "BoundedSemaphore", "Barrier",
+    "TimeoutError", "CancelledError", "InvalidStateError",
+    "IncompleteReadError", "LimitOverrunError",
+    "create_task", "current_task", "all_tasks",
+    "iscoroutine", "iscoroutinefunction", "isfuture", "run",
+)
+
+_sleep_left = threading.local()
+
 SAFE_NODES = {
-    ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Expr, ast.If, ast.IfExp, ast.For,
+    ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Await, ast.AsyncFor, ast.AsyncWith,
+    ast.arguments, ast.arg, ast.Expr, ast.If, ast.IfExp, ast.For,
     ast.While, ast.Break, ast.Continue, ast.Compare, ast.BoolOp, ast.BinOp, ast.UnaryOp,
     ast.Constant, ast.Name, ast.Attribute, ast.Call, ast.Load, ast.Store, ast.Assign,
     ast.AugAssign, ast.Return, ast.Pass, ast.And, ast.Or, ast.Not, ast.Eq, ast.NotEq,
@@ -55,7 +81,7 @@ def _check(tree: ast.AST) -> None:
             raise ScriptError(f"Can't use .{node.attr}")
         if isinstance(node, ast.Name) and node.id.startswith("_"):
             raise ScriptError("Names starting with _ are not allowed")
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("_"):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("_"):
             raise ScriptError("Function names starting with _ are not allowed")
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -75,12 +101,92 @@ def function_names(source: str) -> list:
     except SyntaxError as exc:
         raise ScriptError(f"Syntax error on line {exc.lineno}") from exc
     _check(tree)
-    return [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    return [n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+async def _refuse_io(self, *_args, **_kwargs):
+    raise ScriptError("A bot can't open a connection or run a program")
+
+
+class _BotLoop(asyncio.SelectorEventLoop):
+    """The real asyncio loop, with sockets and programs removed."""
+
+
+for _io_name in (
+    "create_connection", "create_datagram_endpoint", "create_server",
+    "create_unix_connection", "create_unix_server", "connect_accepted_socket",
+    "start_tls", "sendfile", "subprocess_shell", "subprocess_exec",
+    "add_reader", "add_writer", "remove_reader", "remove_writer",
+    "sock_recv", "sock_recv_into", "sock_recvfrom", "sock_recvfrom_into",
+    "sock_sendall", "sock_sendto", "sock_connect", "sock_accept", "sock_sendfile",
+    "getaddrinfo", "getnameinfo",
+):
+    setattr(_BotLoop, _io_name, _refuse_io)
+
+
+def _capped_sleep(real_sleep):
+    def sleep(delay=0, result=None):
+        try:
+            delay = float(delay)
+        except (TypeError, ValueError):
+            delay = 0.0
+        if delay < 0:
+            delay = 0.0
+        left = getattr(_sleep_left, "left", 1.0)
+        delay = min(delay, 1.0, left)
+        _sleep_left.left = left - delay
+        return real_sleep(delay, result)
+    return sleep
+
+
+def _run_on_bot_loop(coro):
+    """Run one coroutine where a bot cannot open a socket."""
+    def work():
+        loop = _BotLoop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    try:
+        asyncio.get_running_loop()
+        inside = True
+    except RuntimeError:
+        inside = False
+    if not inside:
+        return work()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            return pool.submit(work).result(timeout=3)
+        except concurrent.futures.TimeoutError as exc:
+            raise ScriptError("Script ran too long") from exc
+
+
+def _safe_asyncio():
+    real = asyncio
+    safe = types.ModuleType("asyncio")
+    for attr in _ASYNCIO_OK:
+        if hasattr(real, attr):
+            setattr(safe, attr, getattr(real, attr))
+    safe.sleep = _capped_sleep(real.sleep)
+    safe.run = _run_on_bot_loop
+
+    def _missing(name):
+        if name in _ASYNCIO_BLOCKED or "subprocess" in name or name.startswith("open_") or name.startswith("start_"):
+            raise ScriptError(f"Can't use asyncio.{name}")
+        raise AttributeError(f"module 'asyncio' has no attribute {name}")
+
+    safe.__getattr__ = _missing
+    return safe
 
 
 def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     if level or name not in ALLOWED_MODULES:
         raise ScriptError(f"Can't import {name}" if name else "Relative imports are not allowed")
+    if name == "asyncio":
+        return _safe_asyncio()
     module = __import__(name, globals, locals, fromlist, 0)
     if name == "time":
         safe = types.ModuleType("time")
@@ -113,7 +219,7 @@ def _load(source: str, helpers: dict) -> dict:
     return env
 
 
-def _limited(fn, *args):
+def _traced(fn, args):
     steps = {"n": 0}
 
     def tracer(frame, event, arg):
@@ -129,6 +235,47 @@ def _limited(fn, *args):
         return fn(*args)
     finally:
         sys.settrace(old)
+
+
+def _limited(fn, *args):
+    _sleep_left.left = 1.0
+    if not inspect.iscoroutinefunction(fn):
+        return _traced(fn, args)
+
+    def work():
+        _sleep_left.left = 1.0
+        loop = _BotLoop()
+        asyncio.set_event_loop(loop)
+        steps = {"n": 0}
+
+        def tracer(frame, event, arg):
+            if event == "line" and frame.f_code.co_filename == "<bot>":
+                steps["n"] += 1
+                if steps["n"] > 1000:
+                    raise ScriptError("Script ran too long")
+            return tracer
+
+        old = sys.gettrace()
+        sys.settrace(tracer)
+        try:
+            return loop.run_until_complete(fn(*args))
+        finally:
+            sys.settrace(old)
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    try:
+        asyncio.get_running_loop()
+        inside = True
+    except RuntimeError:
+        inside = False
+    if not inside:
+        return work()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            return pool.submit(work).result(timeout=3)
+        except concurrent.futures.TimeoutError as exc:
+            raise ScriptError("Script ran too long") from exc
 
 
 def run_message(source: str, msg: Msg, helpers: dict) -> None:
