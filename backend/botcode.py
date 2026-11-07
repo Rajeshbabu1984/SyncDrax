@@ -8,6 +8,7 @@ import ast
 import asyncio
 import concurrent.futures
 import inspect
+import re
 import sys
 import threading
 import types
@@ -21,7 +22,7 @@ ALLOWED_MODULES = {
     "string", "textwrap", "unicodedata", "html", "difflib",
     "hashlib", "hmac", "base64", "binascii", "uuid",
     "copy", "enum", "pprint", "dataclasses",
-    "urllib.parse", "asyncio",
+    "urllib.parse", "asyncio", "typing", "sqlite3",
 }
 
 # Names on asyncio that open a socket or start a program. A bot never gets these.
@@ -54,6 +55,7 @@ SAFE_NODES = {
     ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Add, ast.Sub, ast.Mult,
     ast.Div, ast.Mod, ast.USub, ast.JoinedStr, ast.FormattedValue, ast.List, ast.Tuple,
     ast.Dict, ast.Subscript, ast.Slice, ast.keyword, ast.Import, ast.ImportFrom, ast.alias,
+    ast.AnnAssign,
 }
 
 
@@ -182,11 +184,121 @@ def _safe_asyncio():
     return safe
 
 
+_BAD_SQL = re.compile(r"(?is)\b(attach|detach|load_extension|vacuum\s+into)\b")
+
+
+def _check_sql(sql: str) -> None:
+    if _BAD_SQL.search(str(sql or "")):
+        raise ScriptError("A bot database can't attach files or load extensions")
+
+
+class _MemoryCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, sql, params=()):
+        _check_sql(sql)
+        self._cursor.execute(sql, params)
+        return self
+
+    def executemany(self, sql, seq):
+        _check_sql(sql)
+        self._cursor.executemany(sql, seq)
+        return self
+
+    def executescript(self, sql):
+        _check_sql(sql)
+        self._cursor.executescript(sql)
+        return self
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    def __getattr__(self, name):
+        if name.startswith("_") or name == "connection":
+            raise ScriptError(f"Can't use .{name}")
+        return getattr(self._cursor, name)
+
+
+class _MemoryConnection:
+    """sqlite3 connection that can never see a file on the server."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _MemoryCursor(self._conn.cursor())
+
+    def execute(self, sql, params=()):
+        _check_sql(sql)
+        return _MemoryCursor(self._conn.execute(sql, params))
+
+    def executemany(self, sql, seq):
+        _check_sql(sql)
+        return _MemoryCursor(self._conn.executemany(sql, seq))
+
+    def executescript(self, sql):
+        _check_sql(sql)
+        self._conn.executescript(sql)
+        return self
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def __getattr__(self, name):
+        if name.startswith("_") or name in (
+            "backup", "load_extension", "enable_load_extension", "set_authorizer",
+            "set_progress_handler", "set_trace_callback", "iterdump",
+        ):
+            raise ScriptError(f"Can't use sqlite3 connection.{name}")
+        return getattr(self._conn, name)
+
+
+def _memory_connect(database=":memory:", *args, **kwargs):
+    if str(database) != ":memory:" or kwargs.get("uri"):
+        raise ScriptError("A bot can only open an in-memory database, not a file")
+    import sqlite3 as real_sqlite
+    return _MemoryConnection(real_sqlite.connect(":memory:"))
+
+
+def _safe_sqlite():
+    import sqlite3 as real_sqlite
+    safe = types.ModuleType("sqlite3")
+    for name in (
+        "Error", "Warning", "DatabaseError", "IntegrityError", "ProgrammingError",
+        "OperationalError", "NotSupportedError", "Row", "version", "sqlite_version",
+        "PARSE_DECLTYPES", "PARSE_COLNAMES",
+    ):
+        if hasattr(real_sqlite, name):
+            setattr(safe, name, getattr(real_sqlite, name))
+    safe.connect = _memory_connect
+
+    def _missing(name):
+        raise ScriptError(f"Can't use sqlite3.{name}")
+
+    safe.__getattr__ = _missing
+    return safe
+
+
 def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     if level or name not in ALLOWED_MODULES:
         raise ScriptError(f"Can't import {name}" if name else "Relative imports are not allowed")
     if name == "asyncio":
         return _safe_asyncio()
+    if name == "sqlite3":
+        return _safe_sqlite()
     module = __import__(name, globals, locals, fromlist, 0)
     if name == "time":
         safe = types.ModuleType("time")
