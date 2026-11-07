@@ -1029,12 +1029,10 @@ def _my_server_ids(session: Session, user_id: int) -> set:
 
 
 def _ensure_home_server() -> None:
-    """Put pre-existing channels into a shared home server so they aren't left ownerless."""
+    """Make sure the shared home server exists and old channels belong to it."""
     with Session(engine) as session:
         home = session.exec(select(ChatServer).where(ChatServer.is_home == True)).first()  # noqa: E712
         orphans = session.exec(select(Channel).where(Channel.server_id == None)).all()  # noqa: E711
-        if not home and not orphans:
-            return
         if not home:
             first = session.exec(select(User).where(User.role != "bot").order_by(User.id)).first()
             home = ChatServer(name="SyncTact", owner_id=first.id if first else 0, is_home=True)
@@ -3397,6 +3395,8 @@ def list_servers(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    if not session.exec(select(ChatServer).where(ChatServer.is_home == True)).first():  # noqa: E712
+        _ensure_home_server()
     ids = _my_server_ids(session, current_user.id)
     if not ids:
         return []

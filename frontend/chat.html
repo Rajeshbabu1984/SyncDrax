@@ -727,8 +727,12 @@
     #sidebarOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:199; }
     @media (max-width: 720px) {
       #hamburgerBtn { display:block; }
-      .sidebar { position:fixed; left:-340px; top:0; bottom:0; z-index:200; transition:left .25s; }
-      .sidebar.mobile-open { left:0; box-shadow:4px 0 24px rgba(0,0,0,.4); }
+      /* Keep the server list on screen. Only the channel column slides away. */
+      .sidebar { position:fixed; left:0; top:0; bottom:0; width:72px; min-width:72px; z-index:200; overflow:visible; }
+      .sidebar-body { position:fixed; top:0; bottom:0; left:-280px; width:260px; background:var(--bg-sidebar);
+                      border-right:1px solid var(--border); transition:left .25s; z-index:201; }
+      .sidebar.mobile-open .sidebar-body { left:72px; box-shadow:4px 0 24px rgba(0,0,0,.4); }
+      .chat-main { margin-left:72px; }
       #sidebarOverlay.visible { display:block; }
       .workspace { overflow:hidden; }
       .chat-header { padding:10px 12px; }
@@ -879,7 +883,6 @@
     <nav class="server-rail" id="serverRail" aria-label="Servers"></nav>
     <div class="sidebar-body">
     <div class="ws-header">
-      <button id="hamburgerBtn" title="Toggle sidebar"><i class="fa-solid fa-bars"></i></button>
       <div class="ws-logo"><img src="images/logo.png" alt="SyncTact" style="height:28px;width:auto;"> <span>SyncTact</span></div>
       <button class="theme-toggle" id="themeToggleBtn" title="Toggle light/dark theme"><i class="fa-regular fa-moon"></i></button>
       <a href="index.html" class="btn-home" title="Back to Home"><i class="fa-solid fa-house"></i></a>
@@ -953,6 +956,7 @@
   <!-- Chat main -->
   <main class="chat-main">
     <div class="chat-header">
+      <button id="hamburgerBtn" title="Servers and channels"><i class="fa-solid fa-bars"></i></button>
       <span id="chatTitle" class="chat-title"># general</span>
       <span id="chatDesc" class="chat-desc"></span>
       <div class="header-actions">

@@ -653,8 +653,9 @@ const SERVER_COLORS = ['#5865f2', '#57f287', '#fee75c', '#eb459e', '#ed4245', '#
 
 async function loadServers() {
   const res = await authFetch('/servers');
-  if (!res.ok) return;
-  servers = await res.json();
+  const data = res.ok ? await res.json().catch(() => []) : [];
+  servers = Array.isArray(data) ? data : [];
+  if (!res.ok) showToast('Could not load your servers', 'error');
   const saved = Number(localStorage.getItem('synctact_server'));
   activeServerId = servers.some(s => s.id === saved) ? saved : (servers[0]?.id ?? null);
   renderServerRail();
@@ -673,7 +674,7 @@ function renderServerRail() {
       b.classList.add('has-icon');
       b.style.backgroundImage = `url("${icon}")`;
     } else {
-      b.textContent = (s.name.trim().charAt(0) || '?').toUpperCase();
+      b.textContent = ((s.name || '?').trim().charAt(0) || '?').toUpperCase();
       b.style.background = SERVER_COLORS[s.id % SERVER_COLORS.length];
     }
     b.addEventListener('click', () => selectServer(s.id));
