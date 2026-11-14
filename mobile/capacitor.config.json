@@ -1,0 +1,12 @@
+{
+  "appId": "com.synctact.app",
+  "appName": "SyncTact",
+  "webDir": "../frontend",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
