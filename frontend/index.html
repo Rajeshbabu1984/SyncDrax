@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32.png">
   <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#7c3aed">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SyncTact">
   <title>SyncTact � Collaborate Without Limits</title>
   <link rel="stylesheet" href="css/styles.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -25,6 +31,7 @@
       <a href="#discovery" class="nav-link">Discover</a>
       <a href="#" class="nav-link">Pricing</a>
       <a href="chat.html" class="nav-link"><i class="fa-solid fa-comments" style="margin-right:4px;"></i>Chat</a>
+      <button class="btn btn-ghost" id="installAppBtn" hidden type="button"><i class="fa-solid fa-mobile-screen"></i> Install app</button>
       <button class="btn btn-ghost" id="signInBtn">Sign In</button>
       <button class="btn btn-primary" id="signUpBtn">Sign Up Free</button>
     </div>
@@ -404,5 +411,6 @@
       }
     })();
   </script>
+  <script src="js/install.js"></script>
 </body>
 </html>

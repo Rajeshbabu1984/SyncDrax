@@ -13,6 +13,10 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#7c3aed" />
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SyncTact">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="js/config.js"></script>
   <script src="js/webrtc.js"></script>
@@ -735,7 +739,7 @@
       .chat-main { margin-left:72px; }
       #sidebarOverlay.visible { display:block; }
       .workspace { overflow:hidden; }
-      .chat-header { padding:10px 12px; }
+      .chat-header { padding: calc(10px + env(safe-area-inset-top)) 12px 10px; }
       .msg-input-row { padding:8px 10px; }
       .ia-btn { padding:6px 8px; }
       #msgInput { font-size:.9rem; }
@@ -957,6 +961,7 @@
   <main class="chat-main">
     <div class="chat-header">
       <button id="hamburgerBtn" title="Servers and channels"><i class="fa-solid fa-bars"></i></button>
+      <button class="ia-btn" id="installAppBtn" title="Install SyncTact on this phone" hidden type="button"><i class="fa-solid fa-mobile-screen"></i></button>
       <span id="chatTitle" class="chat-title"># general</span>
       <span id="chatDesc" class="chat-desc"></span>
       <div class="header-actions">
@@ -1727,6 +1732,7 @@
 </div>
 
 <script src="js/chatapp.js"></script>
+<script src="js/install.js"></script>
 
 <script>
   if ('serviceWorker' in navigator) {

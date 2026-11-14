@@ -1,11 +1,12 @@
 // Bump the version whenever caching rules change so old caches are deleted on activate.
-const CACHE = 'synctact-v2';
+const CACHE = 'synctact-v3';
 const PRECACHE = [
   '/',
   '/index.html',
   '/chat.html',
   '/js/chatapp.js',
   '/js/config.js',
+  '/js/install.js',
   '/css/styles.css',
   '/manifest.json',
 ];
