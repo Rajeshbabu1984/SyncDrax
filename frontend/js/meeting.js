@@ -14,6 +14,9 @@
   /* -------------------- DOM REFS -------------------- */
   const lobby           = document.getElementById('lobby');
   const meetingRoom     = document.getElementById('meetingRoom');
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    meetingRoom.classList.add('sidebar-collapsed');
+  }
   const lobbyPreview    = document.getElementById('lobbyPreview');
   const lobbyCanvas     = document.getElementById('lobbyCanvas');
   const lobbyNoCam      = document.getElementById('lobbyNoCam');

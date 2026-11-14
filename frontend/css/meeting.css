@@ -5,6 +5,7 @@
 .meeting-body {
   overflow: hidden;
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ================== MEETING ROOM LAYOUT ================== */
@@ -660,15 +661,48 @@
 
 /* ================== RESPONSIVE MEETING ================== */
 @media (max-width: 768px) {
-  .meeting-room, .meeting-room.chat-open {
+  .meeting-room,
+  .meeting-room.chat-open,
+  .meeting-room.sidebar-collapsed,
+  .meeting-room.sidebar-collapsed.chat-open {
     grid-template-columns: 1fr;
+    height: 100dvh;
   }
-  .sidebar { display: none; }
+  .meeting-room .sidebar {
+    display: flex;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 88vw);
+    z-index: 280;
+    transform: translateX(-110%);
+    transition: transform 0.2s ease;
+    padding-top: env(safe-area-inset-top);
+  }
+  .meeting-room:not(.sidebar-collapsed) .sidebar {
+    transform: translateX(0);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.45);
+  }
+  .meeting-room.chat-open .chat-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 290;
+    width: 100%;
+    height: 100%;
+    padding-top: env(safe-area-inset-top);
+  }
   .bg-panel { width: 92vw; }
   .bg-options { grid-template-columns: repeat(3, 1fr); }
-  .toolbar { padding: 0 8px; gap: 4px; }
-  .tool-btn { min-width: 48px; padding: 8px 10px; }
+  .toolbar {
+    padding: 0 8px calc(8px + env(safe-area-inset-bottom));
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .tool-btn { min-width: 44px; padding: 8px 10px; }
   .tool-btn span { display: none; }
+  .video-topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 }
 
 /* ================== PROFILE PIC UPLOAD ================== */

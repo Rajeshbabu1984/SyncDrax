@@ -1,0 +1,19 @@
+{
+  "name": "synctact-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SyncTact iOS and Android app. The UI is the website in frontend/.",
+  "scripts": {
+    "sync": "cap sync",
+    "android": "cap sync && cap open android",
+    "ios": "cap sync && cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/ios": "^7.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3"
+  }
+}

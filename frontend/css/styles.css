@@ -450,8 +450,68 @@ body {
   .footer { flex-direction: column; gap: 8px; padding: 24px; text-align: center; }
 }
 @media (max-width: 560px) {
-  .hero-title { font-size: 2.2rem; }
-  .join-box { flex-direction: column; width: 100%; }
-  .join-input { width: 100%; }
+  .nav {
+    height: auto;
+    min-height: 56px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+    gap: 8px;
+  }
+  .nav-title { font-size: 1.05rem; }
+  .nav-links { gap: 8px; }
   .nav-links .nav-link { display: none; }
+  .nav-links .btn { padding: 8px 12px; }
+  .hero {
+    min-height: auto;
+    padding: 28px 16px 36px;
+    gap: 28px;
+  }
+  .hero-title { font-size: 2.15rem; }
+  .hero-sub { font-size: 1rem; margin-bottom: 22px; }
+  .hero-actions { flex-direction: column; align-items: stretch; }
+  .hero-actions .btn,
+  .join-box,
+  .join-input { width: 100%; }
+  .join-box { flex-direction: column; }
+  .features { padding: 36px 16px 48px; }
+  .section-title { font-size: 1.55rem; margin-bottom: 24px; }
+  .footer { padding: calc(20px + env(safe-area-inset-bottom)) 16px; }
 }
+
+/* Mobile app server picker. Hidden on the website. */
+.native-server-btn {
+  position: fixed;
+  left: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 800;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-bright);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.native-server-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0, 0, 0, 0.62);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+.native-server-sheet.hidden { display: none; }
+.native-server-card {
+  width: min(440px, 100%);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px;
+}
+.native-server-card h2 { color: var(--text-bright); font-size: 1.15rem; margin-bottom: 8px; }
+.native-server-card p { color: var(--text-muted); font-size: 0.88rem; margin-bottom: 14px; }
+.native-server-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }

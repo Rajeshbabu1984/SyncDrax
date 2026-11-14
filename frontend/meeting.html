@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
   <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32.png">
   <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
   <title>SyncTact — Meeting</title>
@@ -327,6 +329,7 @@
   <input type="file" id="profilePicInput" accept="image/*" style="display:none">
   <input type="file" id="customBgInput" accept="image/*" style="display:none">
   <script src="js/config.js"></script>
+  <script src="js/native-app.js"></script>
   <!-- MediaPipe Selfie Segmentation (real background replacement) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
   <script src="js/backgrounds.js"></script>
