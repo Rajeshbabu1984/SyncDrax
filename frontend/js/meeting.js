@@ -198,6 +198,25 @@
     const base = (typeof API_BASE !== 'undefined' ? API_BASE : '');
     fetch(`${base}/rooms/${encodeURIComponent(ROOM_CODE)}/host`, { method: 'POST' }).catch(() => {});
   }
+  let roomLocked = false;
+  let meetingTicket = '';
+  const passInput = document.getElementById('meetingPasscode');
+  const passHint = document.getElementById('passcodeHint');
+  fetch((typeof API_BASE !== 'undefined' ? API_BASE : '') + `/rooms/${encodeURIComponent(ROOM_CODE)}/lock`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      roomLocked = !!(data && data.locked);
+      if (!passInput || !passHint) return;
+      if (roomLocked) {
+        passInput.placeholder = 'Meeting passcode';
+        passHint.style.display = '';
+        passHint.textContent = 'This meeting needs a passcode before you can join.';
+      } else if (IS_HOST) {
+        passHint.style.display = '';
+        passHint.textContent = 'Add a passcode if you want the link to stay locked.';
+      }
+    })
+    .catch(() => {});
   fetch((typeof API_BASE !== 'undefined' ? API_BASE : '') + '/ice-servers')
     .then(r => r.ok ? r.json() : null)
     .then(data => {
@@ -313,6 +332,39 @@
       localStream = dest.stream;
     }
 
+    const typed = (passInput && passInput.value || '').trim();
+    const api = (typeof API_BASE !== 'undefined' ? API_BASE : '');
+    if (IS_HOST && typed && !roomLocked) {
+      const setRes = await fetch(`${api}/rooms/${encodeURIComponent(ROOM_CODE)}/passcode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode: typed }),
+      });
+      if (!setRes.ok) {
+        const err = await setRes.json().catch(() => ({}));
+        if (passHint) {
+          passHint.style.display = '';
+          passHint.textContent = err.detail || 'Could not set that passcode.';
+        }
+        return;
+      }
+      roomLocked = true;
+    }
+    const ticketRes = await fetch(`${api}/rooms/${encodeURIComponent(ROOM_CODE)}/ticket`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode: typed }),
+    });
+    if (!ticketRes.ok) {
+      if (passHint) {
+        passHint.style.display = '';
+        passHint.textContent = ticketRes.status === 403 ? 'That passcode is wrong.' : 'Could not check the passcode.';
+      }
+      lobby.classList.remove('hidden');
+      return;
+    }
+    meetingTicket = (await ticketRes.json()).ticket || '';
+
     if (IS_HOST) {
       lobby.classList.add('hidden');
       meetingRoom.classList.remove('hidden');
@@ -413,6 +465,17 @@
       roomCode:   ROOM_CODE,
       displayName: displayName,
       host: IS_HOST,
+      ticket: meetingTicket,
+
+      onBadPasscode() {
+        if (passHint) {
+          passHint.style.display = '';
+          passHint.textContent = 'That passcode is wrong.';
+        }
+        document.getElementById('joinHold').classList.add('hidden');
+        meetingRoom.classList.add('hidden');
+        lobby.classList.remove('hidden');
+      },
 
       onWaiting() {
         showJoinHold('Waiting for the host', 'You will join as soon as they let you in.');

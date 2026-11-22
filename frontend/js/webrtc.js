@@ -45,10 +45,11 @@ async function _loadIceConfig() {
 const DISCONNECT_GRACE_MS = 8000;
 
 class SyncTactRTC {
-  constructor({ roomCode, displayName, host, onPeerJoined, onPeerLeft, onPeerStream, onMessage, onParticipantsUpdate, onData, onWaiting, onDenied, onAdmitted, onKnock, onKnockCancel }) {
+  constructor({ roomCode, displayName, host, ticket, onPeerJoined, onPeerLeft, onPeerStream, onMessage, onParticipantsUpdate, onData, onWaiting, onDenied, onAdmitted, onKnock, onKnockCancel, onBadPasscode }) {
     this.roomCode   = roomCode;
     this.localName  = displayName;
     this.isHost     = !!host;
+    this.ticket     = ticket || '';
     this.peerId     = this._genId();
 
     this.peers      = new Map();  // peerId -> { pc, stream, name, pendingIce, disconnectTimer }
@@ -72,6 +73,7 @@ class SyncTactRTC {
     this.onAdmitted           = onAdmitted           || (() => {});
     this.onKnock              = onKnock              || (() => {});
     this.onKnockCancel        = onKnockCancel        || (() => {});
+    this.onBadPasscode        = onBadPasscode        || (() => {});
   }
 
   _resolveWS() {
@@ -81,8 +83,11 @@ class SyncTactRTC {
         (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
           ? `${location.hostname}:8000`
           : location.host);
-    const hostQ = this.isHost ? '?host=1' : '';
-    return `${base}/ws/${this.roomCode}/${this.peerId}/${encodeURIComponent(this.localName)}${hostQ}`;
+    const params = new URLSearchParams();
+    if (this.isHost) params.set('host', '1');
+    if (this.ticket) params.set('ticket', this.ticket);
+    const q = params.toString();
+    return `${base}/ws/${this.roomCode}/${this.peerId}/${encodeURIComponent(this.localName)}${q ? '?' + q : ''}`;
   }
 
   _genId() {
@@ -137,6 +142,13 @@ class SyncTactRTC {
   /* =========== SIGNALING HANDLER =========== */
   async _handleMessage(msg) {
     switch (msg.type) {
+
+      case 'bad_passcode': {
+        this._disconnecting = true;
+        try { this.ws && this.ws.close(); } catch (e) {}
+        this.onBadPasscode(msg);
+        break;
+      }
 
       case 'waiting': {
         this.onWaiting(msg);

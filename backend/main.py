@@ -54,6 +54,7 @@ from starlette.websockets import WebSocketState
 import bcrypt as _bcrypt
 import botcode
 from sqlalchemy import Column, LargeBinary
+from sqlalchemy import func as sa_func
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -290,6 +291,7 @@ class ChatServer(SQLModel, table=True):
     name:       str
     owner_id:   int           = Field(default=0)
     is_home:    bool          = Field(default=False)
+    is_public:  bool          = Field(default=False)  # listed on the Explore Channels page
     icon_url:   Optional[str] = Field(default=None)
     created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -459,6 +461,15 @@ class ServerSetting(SQLModel, table=True):
     updated_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ReadCursor(SQLModel, table=True):
+    """How far a person has read a channel or a direct conversation. Survives a refresh."""
+    id:           Optional[int] = Field(default=None, primary_key=True)
+    user_id:      int           = Field(index=True)
+    channel_id:   Optional[int] = Field(default=None, index=True)
+    peer_id:      Optional[int] = Field(default=None, index=True)
+    last_read_id: int           = Field(default=0)
+
+
 class UserBlock(SQLModel, table=True):
     id:         Optional[int] = Field(default=None, primary_key=True)
     blocker_id: int           = Field(index=True)
@@ -584,6 +595,11 @@ def migrate_db():
             if 'icon_url' not in existing:
                 conn.execute(sqlalchemy.text(_ddl(
                     'ALTER TABLE chatserver ADD COLUMN icon_url VARCHAR DEFAULT NULL')))
+            if 'is_public' not in existing:
+                conn.execute(sqlalchemy.text(_ddl(
+                    'ALTER TABLE chatserver ADD COLUMN is_public BOOLEAN DEFAULT FALSE')))
+                conn.execute(sqlalchemy.text(
+                    "UPDATE chatserver SET is_public = TRUE WHERE is_home = TRUE"))
         if 'bot' in tables:
             existing = {c['name'] for c in insp.get_columns('bot')}
             for col, ddl in [
@@ -1000,7 +1016,8 @@ def _can_view_message(user: User, cm: "ChatMessage") -> bool:
 
 def _server_dict(srv: "ChatServer", role: str) -> dict:
     return {"id": srv.id, "name": srv.name, "owner_id": srv.owner_id,
-            "is_home": srv.is_home, "role": role, "icon_url": srv.icon_url}
+            "is_home": srv.is_home, "is_public": bool(getattr(srv, "is_public", False)),
+            "role": role, "icon_url": srv.icon_url}
 
 
 def _server_membership(session: Session, user_id: int, server_id: int) -> Optional["ServerMember"]:
@@ -1121,7 +1138,7 @@ def _ensure_home_server() -> None:
         orphans = session.exec(select(Channel).where(Channel.server_id == None)).all()  # noqa: E711
         if not home:
             first = session.exec(select(User).where(User.role != "bot").order_by(User.id)).first()
-            home = ChatServer(name="SyncTact", owner_id=first.id if first else 0, is_home=True)
+            home = ChatServer(name="SyncTact", owner_id=first.id if first else 0, is_home=True, is_public=True)
             session.add(home)
             session.commit()
             session.refresh(home)
@@ -2131,10 +2148,13 @@ def update_channel_settings(channel_id: int, body: ChannelSettingsIn,
 
 @app.get("/discovery")
 def server_discovery(session: Session = Depends(get_session)):
-    """Return all non-archived channels with member/message counts."""
+    """Channels on servers the owner has listed publicly."""
+    public_ids = {s.id for s in session.exec(select(ChatServer).where(ChatServer.is_public == True)).all()}  # noqa: E712
     channels = session.exec(select(Channel).where(Channel.archived == False)).all()
     out = []
     for ch in channels:
+        if ch.server_id not in public_ids:
+            continue
         msg_count = len(session.exec(select(ChatMessage).where(ChatMessage.channel_id == ch.id)).all())
         out.append({
             "id": ch.id, "name": ch.name, "description": ch.description or "",
@@ -2292,6 +2312,8 @@ def admin_delete_user(
 rooms: Dict[str, Dict[str, dict]] = {}
 room_hosts: Dict[str, str] = {}
 hosted_rooms: Dict[str, float] = {}  # room_code -> unix expiry, set when the host opens the lobby
+room_passes: Dict[str, tuple] = {}  # room_code -> (passcode, unix expiry)
+room_tickets: Dict[str, tuple] = {}  # ticket -> (room_code, unix expiry)
 room_waiting: Dict[str, Dict[str, str]] = {}  # room_code -> peer_id -> display name
 _admit_events: Dict[tuple, asyncio.Event] = {}
 _admit_denied: set = set()
@@ -2430,12 +2452,76 @@ def _room_expects_host(room_code: str) -> bool:
     return True
 
 
+def _same_secret(given: str, current: str) -> bool:
+    if len(given) != len(current):
+        return False
+    return secrets.compare_digest(given, current)
+
+
+def _active_passcode(room_code: str) -> Optional[str]:
+    entry = room_passes.get(room_code)
+    if not entry:
+        return None
+    secret, expiry = entry
+    if expiry < time.time():
+        room_passes.pop(room_code, None)
+        return None
+    return secret
+
+
+def _ticket_ok(room_code: str, ticket: str) -> bool:
+    if not _active_passcode(room_code):
+        return True
+    info = room_tickets.get(ticket or "")
+    if not info:
+        return False
+    code, expiry = info
+    return code == room_code and expiry >= time.time()
+
+
 @app.post("/rooms/{room_code}/host")
 async def claim_room_host(room_code: str):
     """The host's lobby calls this so guests wait even before the host clicks Join."""
     code = room_code.upper()
     hosted_rooms[code] = time.time() + 60 * 60
     return {"ok": True, "room": code}
+
+
+@app.get("/rooms/{room_code}/lock")
+async def room_lock(room_code: str):
+    code = room_code.upper()
+    return {"room": code, "locked": _active_passcode(code) is not None}
+
+
+@app.post("/rooms/{room_code}/passcode")
+async def set_room_passcode(room_code: str, body: dict):
+    """Host sets the passcode guests must enter. Send the current one to replace it."""
+    code = room_code.upper()
+    new = str(body.get("passcode") or "").strip()
+    current = _active_passcode(code)
+    given = str(body.get("current") or "").strip()
+    if current and not _same_secret(given, current):
+        raise HTTPException(403, "Wrong passcode")
+    if not new:
+        room_passes.pop(code, None)
+        return {"ok": True, "locked": False}
+    if len(new) < 4 or len(new) > 32:
+        raise HTTPException(400, "Use 4 to 32 characters")
+    room_passes[code] = (new, time.time() + 6 * 60 * 60)
+    hosted_rooms[code] = time.time() + 60 * 60
+    return {"ok": True, "locked": True}
+
+
+@app.post("/rooms/{room_code}/ticket")
+async def room_ticket(room_code: str, body: dict):
+    code = room_code.upper()
+    need = _active_passcode(code)
+    given = str(body.get("passcode") or "").strip()
+    if need and not _same_secret(given, need):
+        raise HTTPException(403, "Wrong passcode")
+    ticket = secrets.token_urlsafe(18)
+    room_tickets[ticket] = (code, time.time() + 6 * 60 * 60)
+    return {"ticket": ticket}
 
 
 async def _release_waiting(room_code: str, peer_id: str, deny: bool = False) -> None:
@@ -2481,11 +2567,16 @@ async def _wait_for_host(ws: WebSocket, room_code: str, peer_id: str, display_na
 
 # -------------------------------------------------------------
 @app.websocket("/ws/{room_code}/{peer_id}/{display_name}")
-async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name: str, host: int = 0):
+async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name: str, host: int = 0, ticket: str = ""):
     await ws.accept()
     room_code = room_code.upper()
     display_name = (display_name or "Guest")[:24]
     wants_host = host == 1
+
+    if not _ticket_ok(room_code, ticket):
+        await safe_send(ws, {"type": "bad_passcode"})
+        await ws.close()
+        return
 
     if (_host_is_here(room_code) or _room_expects_host(room_code)) and peer_id != room_hosts.get(room_code) and not wants_host:
         if not await _wait_for_host(ws, room_code, peer_id, display_name):
@@ -2733,6 +2824,133 @@ def _channel_dict(c: Channel) -> dict:
             "category_id": c.category_id, "server_id": c.server_id,
             "readonly": bool(c.readonly), "archived": bool(c.archived),
             "channel_type": c.channel_type or 'text'}
+
+
+def _as_clauses(where):
+    return where if isinstance(where, tuple) else (where,)
+
+
+def _latest_message_id(session: Session, where) -> int:
+    row = session.exec(select(ChatMessage.id).where(*_as_clauses(where)).order_by(ChatMessage.id.desc())).first()
+    return int(row or 0)
+
+
+def _count_unread(session: Session, where) -> int:
+    value = session.exec(select(sa_func.count()).select_from(ChatMessage).where(*_as_clauses(where))).one()
+    return int(value or 0)
+
+
+def _read_cursor(session: Session, user_id: int, channel_id: Optional[int] = None,
+                 peer_id: Optional[int] = None) -> Optional[ReadCursor]:
+    q = select(ReadCursor).where(ReadCursor.user_id == user_id)
+    if channel_id is not None:
+        q = q.where(ReadCursor.channel_id == channel_id)
+    else:
+        q = q.where(ReadCursor.peer_id == peer_id)
+    return session.exec(q).first()
+
+
+def _dm_where(user_id: int, peer_id: int):
+    return (
+        ChatMessage.channel_id == None,  # noqa: E711
+        ((ChatMessage.sender_id == user_id) & (ChatMessage.dm_to_user_id == peer_id)) |
+        ((ChatMessage.sender_id == peer_id) & (ChatMessage.dm_to_user_id == user_id)),
+    )
+
+
+class ReadIn(BaseModel):
+    channel_id: Optional[int] = None
+    peer_id: Optional[int] = None
+    message_id: Optional[int] = None
+
+
+@app.get("/chat/unreads")
+def chat_unreads(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    """Unread counts since the last channel or DM this person opened.
+
+    The first time we see someone, their cursor is set to the latest message so older history
+    is not badged. Messages that arrive after that stay unread until they open the conversation.
+    """
+    uid = current_user.id
+    channels_out: Dict[str, int] = {}
+    servers_out: Dict[str, int] = {}
+    for ch in session.exec(select(Channel).where(Channel.server_id.in_(list(_my_server_ids(session, uid))))).all():
+        if ch.channel_type == "voice":
+            continue
+        latest = _latest_message_id(session, ChatMessage.channel_id == ch.id)
+        cursor = _read_cursor(session, uid, channel_id=ch.id)
+        if cursor is None:
+            session.add(ReadCursor(user_id=uid, channel_id=ch.id, last_read_id=latest))
+            continue
+        count = _count_unread(session, (
+            ChatMessage.channel_id == ch.id,
+            ChatMessage.id > cursor.last_read_id,
+            ChatMessage.sender_id != uid,
+        ))
+        if count:
+            channels_out[str(ch.id)] = count
+            key = str(ch.server_id or 0)
+            servers_out[key] = servers_out.get(key, 0) + count
+    sent = session.exec(select(ChatMessage.dm_to_user_id).where(
+        ChatMessage.channel_id == None, ChatMessage.sender_id == uid)).all()  # noqa: E711
+    got = session.exec(select(ChatMessage.sender_id).where(
+        ChatMessage.channel_id == None, ChatMessage.dm_to_user_id == uid)).all()  # noqa: E711
+    # The first sync catches the person up on conversations that already existed.
+    # A direct message that arrives after that stays unread until they open it.
+    first_sync = session.exec(select(ReadCursor).where(
+        ReadCursor.user_id == uid,
+        ReadCursor.channel_id == None,  # noqa: E711
+        ReadCursor.peer_id == None,  # noqa: E711
+    )).first() is None
+    dms_out: Dict[str, int] = {}
+    for peer in {p for p in list(sent) + list(got) if p and p != uid}:
+        cond = _dm_where(uid, peer)
+        latest = _latest_message_id(session, cond)
+        cursor = _read_cursor(session, uid, peer_id=peer)
+        if cursor is None:
+            cursor = ReadCursor(user_id=uid, peer_id=peer, last_read_id=latest if first_sync else 0)
+            session.add(cursor)
+            if first_sync:
+                continue
+        count = _count_unread(session, (
+            *cond,
+            ChatMessage.id > cursor.last_read_id,
+            ChatMessage.sender_id != uid,
+        ))
+        if count:
+            dms_out[str(peer)] = count
+    if first_sync:
+        session.add(ReadCursor(user_id=uid, last_read_id=0))
+    session.commit()
+    return {"channels": channels_out, "servers": servers_out, "dms": dms_out}
+
+
+@app.put("/chat/read")
+def mark_chat_read(body: ReadIn, current_user: User = Depends(get_current_user),
+                   session: Session = Depends(get_session)):
+    if (body.channel_id is None) == (body.peer_id is None):
+        raise HTTPException(400, "Say which channel or conversation you read")
+    uid = current_user.id
+    if body.channel_id is not None:
+        ch = session.get(Channel, body.channel_id)
+        if not ch or not _is_server_member(session, uid, ch.server_id):
+            raise HTTPException(404, "Channel not found")
+        latest = _latest_message_id(session, ChatMessage.channel_id == ch.id)
+        cursor = _read_cursor(session, uid, channel_id=ch.id)
+        if cursor is None:
+            cursor = ReadCursor(user_id=uid, channel_id=ch.id)
+    else:
+        if not session.get(User, body.peer_id):
+            raise HTTPException(404, "Person not found")
+        latest = _latest_message_id(session, _dm_where(uid, body.peer_id))
+        cursor = _read_cursor(session, uid, peer_id=body.peer_id)
+        if cursor is None:
+            cursor = ReadCursor(user_id=uid, peer_id=body.peer_id)
+    target = latest if body.message_id is None else min(latest, max(0, int(body.message_id)))
+    cursor.last_read_id = max(cursor.last_read_id or 0, target)
+    session.add(cursor)
+    session.commit()
+    return {"ok": True, "last_read_id": cursor.last_read_id}
 
 
 @app.get("/chat/channels")
@@ -3811,7 +4029,8 @@ async def remove_server_icon(
 
 
 class ServerRename(BaseModel):
-    name: str
+    name: Optional[str] = None
+    is_public: Optional[bool] = None
 
 
 class MemberRoleUpdate(BaseModel):
@@ -3829,11 +4048,16 @@ def rename_server(
     if not srv:
         raise HTTPException(404, "Server not found")
     if not _can_manage_server(session, current_user, server_id):
-        raise HTTPException(403, "Only the owner or a moderator can rename this server")
-    name = body.name.strip()[:64]
-    if not name:
-        raise HTTPException(400, "Server name required")
-    srv.name = name
+        raise HTTPException(403, "Only the owner or a moderator can change this server")
+    if body.name is None and body.is_public is None:
+        raise HTTPException(400, "Nothing to change")
+    if body.name is not None:
+        name = body.name.strip()[:64]
+        if not name:
+            raise HTTPException(400, "Server name required")
+        srv.name = name
+    if body.is_public is not None:
+        srv.is_public = bool(body.is_public)
     session.add(srv)
     session.commit()
     mem = _server_membership(session, current_user.id, server_id)

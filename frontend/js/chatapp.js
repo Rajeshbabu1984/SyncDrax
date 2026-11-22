@@ -82,6 +82,9 @@ let typingTimers  = {};      // channel/dm → timer
 let emojiTarget   = null;    // 'input' or message_id for reaction
 let pendingEmoji  = '💬';   // selected channel emoji
 let unread        = {};      // { cid: count }
+let serverUnread  = {};      // { serverId: count } — survives a refresh
+let _readTimer    = null;
+let _unreadRefreshTimer = null;
 let allUsers      = [];      // [{id, name, avatar_url, status}] from /chat/users
 let threadParentId   = null;
 let threadParentData = null;
@@ -138,6 +141,7 @@ async function initChat() {
   try { await loadServers(); }  catch (e) { console.warn('[init] servers', e); }
   try { await loadChannels(); } catch (e) { console.warn('[init] channels', e); showToast('Could not load channels — retrying when reconnected', 'error'); }
   try { await loadUsers(); }    catch (e) { console.warn('[init] users', e); }
+  try { await loadUnreads(); }  catch (e) { console.warn('[init] unreads', e); }
   try { loadCategories(); } catch (e) { console.warn('[init] categories', e); }
   try { loadMyProfile(); }  catch (e) { console.warn('[init] profile', e); }
   connectWS();
@@ -366,9 +370,18 @@ function handleServerMsg(msg) {
         appendMessage(m, false);
         if (wasAtBottom) scrollToBottom();
         else notifyUnread();
-      } else {
-        unread[m.channel_id] = (unread[m.channel_id] || 0) + 1;
-        updateUnreadBadge(m.channel_id);
+        if (m.sender_id !== user.id) scheduleMarkRead('channel', m.channel_id, m.id);
+      } else if (m.sender_id !== user.id) {
+        const known = channels.some(c => Number(c.id) === Number(m.channel_id));
+        if (known) {
+          unread[m.channel_id] = (Number(unread[m.channel_id]) || 0) + 1;
+          const sid = String(activeServerId || 0);
+          serverUnread[sid] = (Number(serverUnread[sid]) || 0) + 1;
+          updateUnreadBadge(m.channel_id);
+          renderServerRail();
+        } else {
+          scheduleUnreadRefresh();
+        }
       }
       // Volt recurring task / webhook link: auto-open only for the bot owner; everyone else gets a clickable prompt
       if (msg.open_url && m.bot_name && /^https:\/\//i.test(msg.open_url)) {
@@ -403,6 +416,7 @@ function handleServerMsg(msg) {
         if (m.sender_id === other) typingBar.textContent = '';
         appendMessage(m, false);
         scrollToBottom();
+        if (m.sender_id !== user.id) scheduleMarkRead('dm', other, m.id);
       } else if (m.sender_id !== user.id) {
         unread[`dm_${other}`] = (unread[`dm_${other}`] || 0) + 1;
         updateDmBadge(other);
@@ -691,6 +705,13 @@ function renderServerRail() {
       b.textContent = ((s.name || '?').trim().charAt(0) || '?').toUpperCase();
       b.style.background = SERVER_COLORS[s.id % SERVER_COLORS.length];
     }
+    const missed = Number(serverUnread[String(s.id)] || 0);
+    if (missed > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'server-unread';
+      badge.textContent = missed > 9 ? '9+' : String(missed);
+      b.appendChild(badge);
+    }
     b.addEventListener('click', () => selectServer(s.id));
     rail.appendChild(b);
   });
@@ -848,6 +869,20 @@ async function deleteActiveServer() {
   showToast(`Deleted ${srv.name}`);
 }
 document.getElementById('serverRenameBtn')?.addEventListener('click', renameActiveServer);
+document.getElementById('serverPublicCheck')?.addEventListener('change', async (e) => {
+  if (!activeServerId) return;
+  const on = e.target.checked;
+  const res = await authFetch(`/servers/${activeServerId}`, 'PATCH', { is_public: on });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    e.target.checked = !on;
+    showToast(data.detail || 'Could not update the server', 'error');
+    return;
+  }
+  const srv = servers.find(s => s.id === activeServerId);
+  if (srv) srv.is_public = !!data.is_public;
+  showToast(on ? 'This server is listed on Explore Channels' : 'This server is hidden from Explore Channels');
+});
 
 async function openServerMembers() {
   const srv = servers.find(s => s.id === activeServerId);
@@ -857,6 +892,12 @@ async function openServerMembers() {
   const canRename = srv.role === 'owner' || srv.role === 'moderator';
   row.style.display = canRename ? 'flex' : 'none';
   document.getElementById('serverRenameInput').value = srv.name;
+  const publicRow = document.getElementById('serverPublicRow');
+  const publicCheck = document.getElementById('serverPublicCheck');
+  if (publicRow && publicCheck) {
+    publicRow.style.display = canRename ? 'flex' : 'none';
+    publicCheck.checked = !!srv.is_public;
+  }
   const delBtn = document.getElementById('deleteServerBtn');
   if (delBtn) delBtn.style.display = srv.role === 'owner' && !srv.is_home ? '' : 'none';
   document.getElementById('serverMembersOverlay').classList.remove('hidden');
@@ -1169,7 +1210,13 @@ async function openChannel(ch) {
   activeId    = ch.id;
   localStorage.setItem('synctact_channel', ch.id);
   activeDmName = '';
+  const prevUnread = Number(unread[ch.id] || 0);
   unread[ch.id] = 0;
+  if (prevUnread) {
+    const sid = String(ch.server_id || activeServerId || 0);
+    serverUnread[sid] = Math.max(0, (Number(serverUnread[sid]) || 0) - prevUnread);
+    renderServerRail();
+  }
   chatTitle.textContent  = ch.name;
   chatDesc.textContent   = ch.description || '';
   msgInput.placeholder   = `Message ${ch.name}`;
@@ -1263,7 +1310,8 @@ function renderDmList() {
     li.className = `ch-item${activeType === 'dm' && activeId === numId ? ' active' : ''}`;
     li.dataset.uid = uid;
     const initial = info.name.charAt(0).toUpperCase();
-    const badge   = unread[`dm_${uid}`] ? `<span class="ch-badge">${unread[`dm_${uid}`]}</span>` : '';
+    const dmCount = Number(unread[`dm_${uid}`] || 0);
+    const badge   = dmCount ? `<span class="ch-badge">${dmCount > 99 ? '99+' : dmCount}</span>` : '';
     const statusText = info.status ? `<span style="font-size:.65rem;color:var(--text-muted);margin-left:4px;">${esc(info.status)}</span>` : '';
     const avatarInner = info.avatar_url
       ? `<img class="dm-avatar-img" src="${API + info.avatar_url}" alt="" />`
@@ -1337,10 +1385,50 @@ async function loadMessages(type, id) {
   messagesWrap.innerHTML = '';
   if (!msgs.length) {
     messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">No messages yet. Say hello! 👋</div>';
+    persistRead(type, id);
     return;
   }
   msgs.forEach(m => appendMessage(m, true));
   scrollToBottom();
+  const newest = msgs[msgs.length - 1];
+  persistRead(type, id, newest && newest.id);
+}
+
+async function loadUnreads() {
+  const res = await authFetch('/chat/unreads');
+  if (!res.ok) return;
+  const data = await res.json();
+  unread = {};
+  Object.entries(data.channels || {}).forEach(([id, n]) => { unread[id] = Number(n) || 0; });
+  Object.entries(data.dms || {}).forEach(([id, n]) => { unread[`dm_${id}`] = Number(n) || 0; });
+  serverUnread = {};
+  Object.entries(data.servers || {}).forEach(([id, n]) => { serverUnread[id] = Number(n) || 0; });
+  if (activeType === 'channel' && activeId != null) {
+    const n = Number(unread[activeId] || 0);
+    const sid = String(activeServerId || 0);
+    if (n && serverUnread[sid]) serverUnread[sid] = Math.max(0, serverUnread[sid] - n);
+    unread[activeId] = 0;
+  }
+  if (activeType === 'dm' && activeId != null) unread[`dm_${activeId}`] = 0;
+  renderChannelList();
+  renderDmList();
+  renderServerRail();
+}
+
+function persistRead(type, id, messageId) {
+  const body = type === 'channel' ? { channel_id: Number(id) } : { peer_id: Number(id) };
+  if (messageId) body.message_id = Number(messageId);
+  authFetch('/chat/read', 'PUT', body).catch(() => {});
+}
+
+function scheduleMarkRead(type, id, messageId) {
+  clearTimeout(_readTimer);
+  _readTimer = setTimeout(() => persistRead(type, id, messageId), 300);
+}
+
+function scheduleUnreadRefresh() {
+  clearTimeout(_unreadRefreshTimer);
+  _unreadRefreshTimer = setTimeout(() => { loadUnreads().catch(() => {}); }, 400);
 }
 
 function appendMessage(m, initial) {
@@ -2354,7 +2442,8 @@ function _buildChannelLi(ch) {
   if (unread[ch.id] && ch.channel_type !== 'voice') {
     const badge = document.createElement('span');
     badge.className = 'ch-badge';
-    badge.textContent = String(unread[ch.id]);
+    const n = Number(unread[ch.id] || 0);
+    badge.textContent = n > 99 ? '99+' : String(n);
     li.appendChild(badge);
   }
   if (ch.channel_type === 'voice') {
