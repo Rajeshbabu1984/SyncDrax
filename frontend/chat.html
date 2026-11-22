@@ -876,6 +876,13 @@
 <div id="sidebarOverlay"></div>
 
 <!-- Main workspace -->
+<div id="verifyBanner" class="hidden" style="position:fixed;top:0;left:0;right:0;z-index:80;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 14px;background:#3b2763;color:#fff;font-size:.82rem;">
+    <span>Confirm your email so a lost password can be reset.</span>
+    <input id="verifyCodeInput" maxlength="6" placeholder="6-digit code" style="width:120px;padding:4px 8px;border-radius:6px;border:none;" />
+    <button id="verifyEmailBtn" type="button" style="background:#fff;color:#3b2763;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-weight:700;">Confirm</button>
+    <button id="resendVerifyBtn" type="button" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:6px;padding:4px 10px;cursor:pointer;">Resend</button>
+    <span id="verifyDevCode"></span>
+  </div>
 <div class="workspace" id="workspace">
 
   <!-- Sidebar -->
@@ -1618,6 +1625,10 @@
     <h4 style="margin-bottom:10px;font-size:.85rem;">Create New Event</h4>
     <input class="modal-input" id="eventTitle" placeholder="Event title" />
     <textarea class="modal-input" id="eventDesc" placeholder="Description (optional)" rows="2" style="margin-top:8px;resize:vertical;"></textarea>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.82rem;">
+      <input type="checkbox" id="eventMakeMeeting" checked />
+      Create a meeting room and remind people when it starts
+    </label>
     <div style="display:flex;gap:10px;margin-top:8px;">
       <div style="flex:1;">
         <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:4px;">Starts</div>
@@ -1723,6 +1734,24 @@
     <div class="modal-row" style="margin-top:14px;">
       <button class="modal-btn secondary" id="closeMeetingNotesBtn">Close</button>
     </div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="setupOverlay">
+  <div class="modal-card" style="width:440px;">
+    <h3>Set up your team</h3>
+    <p style="color:var(--text-muted);font-size:.85rem;margin:8px 0 14px;">Name a server and invite one person, or join a public channel.</p>
+    <input class="modal-input" id="setupServerName" maxlength="64" placeholder="Server name" />
+    <div class="modal-row" style="margin-top:12px;">
+      <button class="modal-btn primary" id="setupCreateBtn" type="button">Create server</button>
+      <button class="modal-btn secondary" id="setupSkipBtn" type="button">Skip for now</button>
+    </div>
+    <div id="setupInviteBox" class="hidden" style="margin-top:14px;">
+      <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:6px;">Share this link. It shows the server before anyone joins.</div>
+      <input class="modal-input" id="setupInviteLink" readonly />
+      <button class="modal-btn secondary" id="setupCopyBtn" type="button" style="margin-top:8px;">Copy invite link</button>
+    </div>
+    <p style="margin-top:14px;font-size:.82rem;"><a href="index.html#discovery" style="color:var(--purple-l);">Join a public channel</a></p>
   </div>
 </div>
 

@@ -50,11 +50,22 @@
         <button class="copy-btn" id="copyRoomBtn" title="Copy room code"><i class="fa-regular fa-copy"></i></button>
       </div>
 
+      <p id="relayNote" class="relay-note"></p>
+      <p id="hostLobbyNote" class="relay-note" style="display:none;">People who open your link wait here until you let them in.</p>
+
       <button class="btn btn-primary btn-lg full-width" id="joinNowBtn">
         <i class="fa-solid fa-arrow-right-to-bracket"></i> Join Now
       </button>
 
       <a href="#" onclick="try{window.close();}catch(e){} setTimeout(()=>{const b=new URLSearchParams(location.search).get('back');window.location.href=(b==='chat.html'?b:'index.html');},200); return false;" class="lobby-back"><i class="fa-solid fa-arrow-left"></i> Back</a>
+    </div>
+  </div>
+
+  <div id="joinHold" class="lobby hidden">
+    <div class="lobby-card">
+      <h2 class="lobby-title" id="joinHoldTitle">Asking to join…</h2>
+      <p id="joinHoldText" class="relay-note">The host will let you in.</p>
+      <a href="index.html" class="lobby-back"><i class="fa-solid fa-arrow-left"></i> Leave</a>
     </div>
   </div>
 
@@ -76,6 +87,10 @@
         <ul class="participant-list" id="participantList">
           <!-- dynamically populated -->
         </ul>
+        <div id="waitListWrap" class="hidden">
+          <div class="sidebar-label">Waiting to join</div>
+          <ul class="participant-list" id="waitList"></ul>
+        </div>
       </div>
 
       <div class="sidebar-section">

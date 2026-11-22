@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32.png">
+  <title>Invite — SyncTact</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet" />
+  <script src="js/config.js"></script>
+</head>
+<body class="home-body">
+  <nav class="nav">
+    <div class="nav-brand">
+      <a href="index.html" style="display:flex;align-items:center;gap:8px;text-decoration:none;color:inherit;">
+        <img src="images/logo.png" alt="SyncTact" style="height:36px;width:auto;"><span class="nav-title">SyncTact</span>
+      </a>
+    </div>
+  </nav>
+  <section class="features" style="max-width:480px;margin:0 auto;">
+    <div class="feature-card" id="inviteCard">
+      <h3 id="inviteTitle">Loading invite…</h3>
+      <p id="inviteBody"></p>
+      <button class="btn btn-primary" id="joinBtn" type="button" style="margin-top:16px;display:none;">Join</button>
+    </div>
+  </section>
+  <script>
+    const API = typeof API_BASE !== 'undefined' ? API_BASE : 'http://localhost:8000';
+    const code = new URLSearchParams(location.search).get('code') || '';
+    const title = document.getElementById('inviteTitle');
+    const body = document.getElementById('inviteBody');
+    const joinBtn = document.getElementById('joinBtn');
+
+    function esc(str) {
+      return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    (async function () {
+      if (!code) { title.textContent = 'Missing invite'; return; }
+      try {
+        const res = await fetch(`${API}/invite/${encodeURIComponent(code)}/preview`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          title.textContent = 'Invite unavailable';
+          body.textContent = data.detail || 'This link is invalid or expired.';
+          return;
+        }
+        title.textContent = data.server_name || 'A SyncTact server';
+        const where = data.channel_name ? ' #' + data.channel_name : '';
+        body.innerHTML = esc(data.inviter) + ' invited you' + esc(where) + '.<br>' +
+          Number(data.member_count || 0) + ' member' + (data.member_count === 1 ? '' : 's') + ' so far.';
+        joinBtn.style.display = '';
+        joinBtn.addEventListener('click', () => {
+          sessionStorage.setItem('synctact_pending_invite', code);
+          const token = localStorage.getItem('synctact_token');
+          location.href = token ? 'chat.html' : 'index.html';
+        });
+      } catch (e) {
+        title.textContent = 'Could not load this invite';
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -11,6 +11,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <script>
+    (function () {
+      var path = location.pathname.replace(/\/+$/, '');
+      var meet = path.match(/\/m\/([A-Za-z0-9]{4,16})$/);
+      if (meet) { location.replace('meeting.html?room=' + meet[1].toUpperCase()); return; }
+      var inv = path.match(/\/invite\/([A-Za-z0-9_-]{4,64})$/);
+      if (inv) location.replace('invite.html?code=' + encodeURIComponent(inv[1]));
+    })();
+  </script>
   <script src="js/config.js"></script>
 </head>
 <body class="home-body">
@@ -23,7 +32,7 @@
     <div class="nav-links">
       <a href="#features" class="nav-link">Features</a>
       <a href="#discovery" class="nav-link">Discover</a>
-      <a href="#" class="nav-link">Pricing</a>
+      <a href="pricing.html" class="nav-link">Pricing</a>
       <a href="chat.html" class="nav-link"><i class="fa-solid fa-comments" style="margin-right:4px;"></i>Chat</a>
       <button class="btn btn-ghost" id="signInBtn">Sign In</button>
       <button class="btn btn-primary" id="signUpBtn">Sign Up Free</button>
@@ -124,6 +133,27 @@
     </div>
   </section>
 
+  <section id="chat-product" class="features">
+    <h2 class="section-title">A home for the conversation</h2>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-server"></i></div>
+        <h3>Servers and channels</h3>
+        <p>Give each team its own place, then split the work into channels.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-robot"></i></div>
+        <h3>Bots that post for you</h3>
+        <p>Volt and your own bots can answer, remind, and drop updates into a channel.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon"><i class="fa-solid fa-link"></i></div>
+        <h3>Invites with a preview</h3>
+        <p>Send a link that shows the server name and member count before anyone joins.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- SERVER DISCOVERY -->
   <section id="discovery" style="padding:60px 0;background:var(--bg-sidebar,#0f0e13);">
     <div style="max-width:900px;margin:0 auto;padding:0 24px;">
@@ -140,6 +170,8 @@
     </div>
     <div class="footer-links">
       <a href="tos.html" class="footer-link">Terms of Service</a>
+      <span style="color:var(--border)">·</span>
+      <a href="privacy.html" class="footer-link">Privacy</a>
       <span style="color:var(--border)">�</span>
       <a href="chat.html" class="footer-link"><i class="fa-solid fa-comments" style="font-size:0.75em"></i> Team Chat</a>
       <span style="color:var(--border)">�</span>
@@ -161,6 +193,7 @@
         <h2>Welcome back</h2>
         <input type="email" id="signinEmail" placeholder="Email" class="modal-input" />
         <input type="password" id="signinPassword" placeholder="Password" class="modal-input" />
+        <button type="button" id="forgotLink" style="background:none;border:none;color:var(--purple-light);cursor:pointer;font-size:.82rem;margin:-4px 0 12px;padding:0;text-align:left;">Forgot password?</button>
         <button class="btn btn-primary full-width" id="doSignInBtn">Sign In</button>
         <div class="modal-divider"><span>or</span></div>
         <button class="btn btn-outline full-width" id="continueGuestBtn">
@@ -174,6 +207,27 @@
         <input type="email" id="signupEmail" placeholder="Email" class="modal-input" />
         <input type="password" id="signupPassword" placeholder="Password" class="modal-input" />
         <button class="btn btn-primary full-width" id="doSignUpBtn">Create Account</button>
+      </div>
+
+      <div class="modal-body hidden" id="forgotForm">
+        <h2>Reset password</h2>
+        <p id="forgotHelp" style="color:var(--text-muted);font-size:.85rem;margin-bottom:12px;">Enter the email on your account. We will send a 6-digit code.</p>
+        <input type="email" id="forgotEmail" placeholder="Email" class="modal-input" />
+        <button class="btn btn-primary full-width" id="sendResetBtn">Send code</button>
+        <div id="resetStep" class="hidden" style="margin-top:12px;">
+          <input type="text" id="resetCode" placeholder="6-digit code" class="modal-input" maxlength="6" />
+          <input type="password" id="resetPassword" placeholder="New password" class="modal-input" />
+          <button class="btn btn-primary full-width" id="doResetBtn">Set new password</button>
+        </div>
+        <button type="button" id="backToSignIn" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-top:12px;font-size:.82rem;">Back to sign in</button>
+      </div>
+
+      <div class="modal-body hidden" id="verifyForm">
+        <h2>Confirm your email</h2>
+        <p id="verifyHelp" style="color:var(--text-muted);font-size:.85rem;margin-bottom:12px;">Enter the 6-digit code we sent you.</p>
+        <input type="text" id="verifyCode" placeholder="6-digit code" class="modal-input" maxlength="6" />
+        <button class="btn btn-primary full-width" id="doVerifyBtn">Confirm email</button>
+        <button type="button" class="btn btn-outline full-width" id="skipVerifyBtn" style="margin-top:8px;">I'll do this later</button>
       </div>
     </div>
   </div>
@@ -252,6 +306,7 @@
         pill.style.cssText = 'display:flex;align-items:center;gap:10px;';
         pill.innerHTML = `
           <span style="font-size:0.85rem;color:var(--text-muted)">Signed in as <strong style="color:var(--text-bright)">${esc(user.name)}</strong></span>
+          <a class="btn btn-primary" href="chat.html" style="padding:6px 14px;font-size:0.82rem;text-decoration:none;">Open chat</a>
           <button class="btn btn-ghost" onclick="signOut()" style="padding:6px 14px;font-size:0.82rem">Sign Out</button>
         `;
         navLinks.appendChild(pill);
@@ -299,6 +354,8 @@
       tab.addEventListener('click', () => {
         document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
+        document.getElementById('forgotForm').classList.add('hidden');
+        document.getElementById('verifyForm').classList.add('hidden');
         if (tab.dataset.tab === 'signin') {
           document.getElementById('signinForm').classList.remove('hidden');
           document.getElementById('signupForm').classList.add('hidden');
@@ -340,6 +397,65 @@
       }
     });
 
+    function showAuthPanel(id) {
+      ['signinForm', 'signupForm', 'forgotForm', 'verifyForm'].forEach(name => {
+        document.getElementById(name).classList.toggle('hidden', name !== id);
+      });
+      document.getElementById('authModal').classList.remove('hidden');
+    }
+
+    document.getElementById('forgotLink').addEventListener('click', () => {
+      document.getElementById('forgotEmail').value = document.getElementById('signinEmail').value.trim();
+      showAuthPanel('forgotForm');
+    });
+    document.getElementById('backToSignIn').addEventListener('click', () => showAuthPanel('signinForm'));
+
+    document.getElementById('sendResetBtn').addEventListener('click', async () => {
+      const email = document.getElementById('forgotEmail').value.trim();
+      if (!email) return alert('Enter your email.');
+      const btn = document.getElementById('sendResetBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${API}/auth/forgot`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Could not start a reset');
+        document.getElementById('resetStep').classList.remove('hidden');
+        const help = document.getElementById('forgotHelp');
+        if (data.dev_code) {
+          help.textContent = 'This server is not sending email yet. Your reset code is ' + data.dev_code + '.';
+          document.getElementById('resetCode').value = data.dev_code;
+        } else if (data.delivered) {
+          help.textContent = 'We sent a 6-digit code to that email.';
+        } else {
+          help.textContent = 'If that account exists, a code is on its way. If email is not set up on this server, ask whoever runs it to add an email provider.';
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('doResetBtn').addEventListener('click', async () => {
+      const email = document.getElementById('forgotEmail').value.trim();
+      const code = document.getElementById('resetCode').value.trim();
+      const password = document.getElementById('resetPassword').value;
+      if (!email || !code || !password) return alert('Enter the email, code, and a new password.');
+      const res = await fetch(`${API}/auth/reset`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ email, code, password })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return alert(data.detail || 'Could not reset the password');
+      document.getElementById('signinEmail').value = email;
+      document.getElementById('signinPassword').value = '';
+      showAuthPanel('signinForm');
+      alert('Password updated. Sign in with the new one.');
+    });
+
     /* -- Sign Up -- */
     document.getElementById('doSignUpBtn').addEventListener('click', async () => {
       const name  = document.getElementById('signupName').value.trim();
@@ -361,13 +477,41 @@
           throw new Error(detail || 'Sign up failed');
         }
         saveUser(data.user, data.token);
-        window.location.href = 'chat.html';
+        localStorage.setItem('synctact_needs_setup', '1');
+        const verify = data.verification || {};
+        const help = document.getElementById('verifyHelp');
+        if (verify.dev_code) {
+          help.textContent = 'This server is not sending email yet. Your confirmation code is ' + verify.dev_code + '.';
+          document.getElementById('verifyCode').value = verify.dev_code;
+        } else if (verify.delivered) {
+          help.textContent = 'Enter the 6-digit code we sent to ' + data.user.email + '.';
+        } else {
+          help.textContent = 'We could not email a code from this server. You can confirm later from chat once email is set up.';
+        }
+        document.getElementById('verifyForm').dataset.email = data.user.email;
+        showAuthPanel('verifyForm');
       } catch (err) {
         alert(err.message);
       } finally {
         btn.disabled = false; btn.textContent = 'Create Account';
       }
     });
+
+    document.getElementById('doVerifyBtn').addEventListener('click', async () => {
+      const email = document.getElementById('verifyForm').dataset.email || (getUser() && getUser().email);
+      const code = document.getElementById('verifyCode').value.trim();
+      if (!email || !code) return alert('Enter the confirmation code.');
+      const res = await fetch(`${API}/auth/verify`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ email, code })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return alert(data.detail || 'That code did not work');
+      const current = getUser() || {};
+      saveUser(Object.assign(current, data.user || { email_verified: true }), localStorage.getItem('synctact_token'));
+      window.location.href = 'chat.html';
+    });
+    document.getElementById('skipVerifyBtn').addEventListener('click', () => { window.location.href = 'chat.html'; });
 
     /* -- Enter key submits sign up -- */
     document.getElementById('signupPassword').addEventListener('keydown', (e) => {
@@ -377,7 +521,7 @@
     /* -- Guest -- */
     document.getElementById('continueGuestBtn').addEventListener('click', () => {
       const code = generateCode();
-      window.location.href = `meeting.html?guest=true&room=${code}`;
+      window.location.href = `meeting.html?guest=true&room=${code}&host=true`;
     });
 
     /* -- Server Discovery -- */
@@ -392,7 +536,7 @@
           return;
         }
         grid.innerHTML = channels.slice(0,12).map(ch => `
-          <a href="chat.html" style="background:#19171d;border:1px solid #2f3133;border-radius:12px;padding:18px;text-decoration:none;color:#d1d2d3;transition:border-color .2s,transform .2s;display:block;"
+          <a href="chat.html?channel=${encodeURIComponent(ch.id)}${ch.server_id ? '&server=' + encodeURIComponent(ch.server_id) : ''}" style="background:#19171d;border:1px solid #2f3133;border-radius:12px;padding:18px;text-decoration:none;color:#d1d2d3;transition:border-color .2s,transform .2s;display:block;"
              onmouseover="this.style.borderColor='#7c3aed';this.style.transform='translateY(-2px)';"
              onmouseout="this.style.borderColor='#2f3133';this.style.transform='';">
             <div style="font-size:1rem;font-weight:800;margin-bottom:6px;"># ${esc(ch.name)}</div>
@@ -403,6 +547,18 @@
         grid.innerHTML = '<p style="color:#828689;text-align:center;grid-column:1/-1;">Could not load channels</p>';
       }
     })();
+
+    const startParams = new URLSearchParams(location.search);
+    if (startParams.get('reset')) {
+      document.getElementById('forgotEmail').value = startParams.get('email') || '';
+      document.getElementById('resetCode').value = startParams.get('reset');
+      document.getElementById('resetStep').classList.remove('hidden');
+      showAuthPanel('forgotForm');
+    } else if (startParams.get('verify')) {
+      document.getElementById('verifyForm').dataset.email = startParams.get('email') || '';
+      document.getElementById('verifyCode').value = startParams.get('verify');
+      showAuthPanel('verifyForm');
+    }
   </script>
 </body>
 </html>

@@ -144,8 +144,33 @@
     return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
   }
 
+  function addWaitingGuest(peerId, name) {
+    const wrap = document.getElementById('waitListWrap');
+    const list = document.getElementById('waitList');
+    if (!wrap || !list || document.getElementById('wait-' + peerId)) return;
+    wrap.classList.remove('hidden');
+    const row = document.createElement('li');
+    row.id = 'wait-' + peerId;
+    row.className = 'wait-row';
+    const label = document.createElement('span');
+    label.textContent = name || 'Guest';
+    const admit = document.createElement('button');
+    admit.className = 'admit';
+    admit.textContent = 'Admit';
+    admit.addEventListener('click', () => { if (rtc) rtc.admit(peerId); row.remove(); });
+    const deny = document.createElement('button');
+    deny.textContent = 'Deny';
+    deny.addEventListener('click', () => { if (rtc) rtc.deny(peerId); row.remove(); });
+    row.append(label, admit, deny);
+    list.appendChild(row);
+  }
+
   function initials(name) {
     return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?';
+  }
+
+  function meetingShareUrl() {
+    return new URL('meeting.html?room=' + encodeURIComponent(ROOM_CODE), location.href).href;
   }
 
   function copyToClipboard(text) {
@@ -167,6 +192,22 @@
 
   /* -------------------- LOBBY SETUP -------------------- */
   roomCodeDisplay.textContent = ROOM_CODE;
+  const hostLobbyNote = document.getElementById('hostLobbyNote');
+  if (hostLobbyNote && IS_HOST) {
+    hostLobbyNote.style.display = '';
+    const base = (typeof API_BASE !== 'undefined' ? API_BASE : '');
+    fetch(`${base}/rooms/${encodeURIComponent(ROOM_CODE)}/host`, { method: 'POST' }).catch(() => {});
+  }
+  fetch((typeof API_BASE !== 'undefined' ? API_BASE : '') + '/ice-servers')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      const note = document.getElementById('relayNote');
+      if (!note || !data) return;
+      if (data.relay === 'private') note.textContent = 'Calls can connect across different networks.';
+      else if (data.relay === 'public') note.textContent = 'Calls can connect across different networks through a public relay. Add your own TURN keys to keep that traffic on a relay you control.';
+      else note.textContent = 'No relay is configured, so calls only connect on the same network.';
+    })
+    .catch(() => {});
   const _storedUser = (() => { try { return JSON.parse(localStorage.getItem('synctact_user')); } catch { return null; } })();
   displayNameInput.value = (_storedUser && _storedUser.name) || localStorage.getItem('synctact_name') || '';
 
@@ -272,10 +313,29 @@
       localStream = dest.stream;
     }
 
-    lobby.classList.add('hidden');
-    meetingRoom.classList.remove('hidden');
+    if (IS_HOST) {
+      lobby.classList.add('hidden');
+      meetingRoom.classList.remove('hidden');
+    } else {
+      showJoinHold('Asking to join…', 'If a host is already in this meeting, they will let you in.');
+    }
     enterMeeting();
   });
+
+  function showJoinHold(title, text) {
+    lobby.classList.add('hidden');
+    meetingRoom.classList.add('hidden');
+    const hold = document.getElementById('joinHold');
+    hold.classList.remove('hidden');
+    document.getElementById('joinHoldTitle').textContent = title;
+    document.getElementById('joinHoldText').textContent = text;
+  }
+
+  function showMeetingRoom() {
+    document.getElementById('joinHold').classList.add('hidden');
+    lobby.classList.add('hidden');
+    meetingRoom.classList.remove('hidden');
+  }
 
   /* -------------------- ENTER MEETING -------------------- */
   function enterMeeting() {
@@ -352,6 +412,29 @@
     rtc = new SyncTactRTC({
       roomCode:   ROOM_CODE,
       displayName: displayName,
+      host: IS_HOST,
+
+      onWaiting() {
+        showJoinHold('Waiting for the host', 'You will join as soon as they let you in.');
+      },
+
+      onDenied() {
+        showJoinHold('The host did not let you in', 'You can go back and try another meeting.');
+      },
+
+      onAdmitted() {
+        showMeetingRoom();
+      },
+
+      onKnock(msg) {
+        addWaitingGuest(msg.peer_id, msg.name);
+      },
+
+      onKnockCancel(msg) {
+        document.getElementById('wait-' + msg.peer_id)?.remove();
+        const list = document.getElementById('waitList');
+        if (list && !list.children.length) document.getElementById('waitListWrap').classList.add('hidden');
+      },
 
       onPeerJoined(peerId, name) {
         chat.addSystemMessage(`${name} joined the meeting`);
@@ -698,7 +781,7 @@
 
   // Copy links
   copyRoomBtn.addEventListener('click', () => copyToClipboard(ROOM_CODE));
-  copyMeetingLink.addEventListener('click', () => copyToClipboard(location.href));
+  copyMeetingLink.addEventListener('click', () => copyToClipboard(meetingShareUrl()));
 
   // Layout toggle
   toggleLayout.addEventListener('click', () => {

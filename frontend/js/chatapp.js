@@ -121,6 +121,14 @@ async function initChat() {
     if (!me) return;
     user.role  = me.role;
     user.title = me.title;
+    user.email_verified = me.email_verified;
+    localStorage.setItem('synctact_user', JSON.stringify(user));
+    const banner = document.getElementById('verifyBanner');
+    if (banner) {
+      const show = me.email_verified === false;
+      banner.classList.toggle('hidden', !show);
+      if (show) banner.style.display = 'flex';
+    }
   });
 
   buildEmojiPicker();
@@ -135,7 +143,13 @@ async function initChat() {
   connectWS();
 
   const joinedViaInvite = await redeemPendingInvite();
-  if (!joinedViaInvite && channels.length) openChannel(channels[0]);
+  const wantedChannel = sessionStorage.getItem('synctact_open_channel');
+  if (wantedChannel) sessionStorage.removeItem('synctact_open_channel');
+  const savedChannel = wantedChannel || localStorage.getItem('synctact_channel');
+  const saved = channels.find(c => String(c.id) === String(savedChannel));
+  if (!joinedViaInvite && saved) openChannel(saved);
+  else if (!joinedViaInvite && channels.length) openChannel(channels[0]);
+  maybeShowSetup();
 
   // Event listeners
   sendBtn.addEventListener('click', sendMessage);
@@ -1153,6 +1167,7 @@ async function openChannel(ch) {
   saveDraft();
   activeType  = 'channel';
   activeId    = ch.id;
+  localStorage.setItem('synctact_channel', ch.id);
   activeDmName = '';
   unread[ch.id] = 0;
   chatTitle.textContent  = ch.name;
@@ -2593,7 +2608,7 @@ async function generateInvite() {
   const res = await authFetch('/invite', 'POST', body);
   if (!res.ok) { showToast('Failed to generate invite', 'error'); return; }
   const data = await res.json();
-  const inviteUrl = new URL(`chat.html?invite=${encodeURIComponent(data.code)}`, location.href).href;
+  const inviteUrl = new URL(`invite.html?code=${encodeURIComponent(data.code)}`, location.href).href;
   document.getElementById('inviteLinkInput').value = inviteUrl;
   document.getElementById('inviteCopyWrap').classList.remove('hidden');
 }
@@ -4599,6 +4614,7 @@ async function loadEvents() {
       <div class="event-title">${esc(e.title)}</div>
       ${e.description ? `<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:4px;">${esc(e.description)}</div>` : ''}
       <div class="event-time"><i class="fa-regular fa-clock"></i> ${new Date(e.starts_at).toLocaleString()}${e.ends_at ? ' → ' + new Date(e.ends_at).toLocaleTimeString() : ''}</div>
+      ${e.meeting_code ? `<div style="margin:6px 0;"><a href="meeting.html?room=${encodeURIComponent(e.meeting_code)}${e.creator_id===user.id?'&host=true':''}&back=chat.html" style="color:var(--purple-l);font-size:.8rem;">${e.creator_id===user.id ? 'Start meeting' : 'Join meeting'} ${esc(e.meeting_code)}</a></div>` : ''}
       <div class="event-rsvps">
         <button class="rsvp-btn yes" onclick="rsvpEvent(${e.id},'yes')"><i class="fa-solid fa-check"></i> Yes (${e.rsvps.filter(r=>r.status==='yes').length})</button>
         <button class="rsvp-btn maybe" onclick="rsvpEvent(${e.id},'maybe')"><i class="fa-solid fa-circle-question"></i> Maybe (${e.rsvps.filter(r=>r.status==='maybe').length})</button>
@@ -4631,7 +4647,11 @@ async function createCalendarEvent() {
   const end   = eventInputToIso(document.getElementById('eventEnd').value);
   if (!title || !start) { showToast('Title and start time required', 'error'); return; }
   if (document.getElementById('eventEnd').value && !end) { showToast('That end time is not valid', 'error'); return; }
-  const body = { title, description: desc || null, starts_at: start, channel_id: activeType === 'channel' ? activeId : null };
+  const body = {
+    title, description: desc || null, starts_at: start,
+    channel_id: activeType === 'channel' ? activeId : null,
+    create_meeting: !!document.getElementById('eventMakeMeeting')?.checked,
+  };
   if (end) body.ends_at = end;
   const res = await authFetch('/events', 'POST', body);
   if (!res.ok) {
@@ -4967,12 +4987,93 @@ function initNewFeatureHandlers2() {
 (function captureInviteParam() {
   const params = new URLSearchParams(location.search);
   const code = params.get('invite');
-  if (!code) return;
-  if (/^[\w-]{4,64}$/.test(code)) sessionStorage.setItem('synctact_pending_invite', code);
+  if (code && /^[\w-]{4,64}$/.test(code)) sessionStorage.setItem('synctact_pending_invite', code);
+  const channel = params.get('channel');
+  const server = params.get('server');
+  if (channel && /^\d+$/.test(channel)) sessionStorage.setItem('synctact_open_channel', channel);
+  if (server && /^\d+$/.test(server)) localStorage.setItem('synctact_server', server);
+  if (!code && !channel && !server) return;
   params.delete('invite');
+  params.delete('channel');
+  params.delete('server');
   const qs = params.toString();
   history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
 })();
+
+function maybeShowSetup() {
+  if (localStorage.getItem('synctact_needs_setup') !== '1') return;
+  document.getElementById('setupOverlay')?.classList.remove('hidden');
+}
+
+function dismissSetup() {
+  localStorage.removeItem('synctact_needs_setup');
+  document.getElementById('setupOverlay')?.classList.add('hidden');
+}
+
+document.getElementById('setupSkipBtn')?.addEventListener('click', dismissSetup);
+document.getElementById('setupOverlay')?.addEventListener('click', e => {
+  if (e.target === e.currentTarget) dismissSetup();
+});
+document.getElementById('setupCopyBtn')?.addEventListener('click', () => {
+  const input = document.getElementById('setupInviteLink');
+  if (input?.value) navigator.clipboard.writeText(input.value).then(() => showToast('Invite copied'));
+});
+document.getElementById('setupCreateBtn')?.addEventListener('click', async () => {
+  const name = document.getElementById('setupServerName').value.trim();
+  if (!name) { showToast('Give the server a name'); return; }
+  const res = await authFetch('/servers', 'POST', { name });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not create the server', 'error'); return; }
+  servers.push(data);
+  activeServerId = data.id;
+  localStorage.setItem('synctact_server', data.id);
+  renderServerRail();
+  await loadChannels();
+  if (!channels.length && data.channels) channels = data.channels;
+  renderChannelList();
+  if (channels.length) openChannel(channels[0]);
+  const inv = await authFetch('/invite', 'POST', { server_id: data.id });
+  const invData = await inv.json().catch(() => ({}));
+  if (inv.ok && invData.code) {
+    const link = new URL(`invite.html?code=${encodeURIComponent(invData.code)}`, location.href).href;
+    const box = document.getElementById('setupInviteBox');
+    document.getElementById('setupInviteLink').value = link;
+    box?.classList.remove('hidden');
+  }
+  document.getElementById('setupCreateBtn').disabled = true;
+  dismissSetup();
+  document.getElementById('setupOverlay')?.classList.remove('hidden');
+});
+
+document.getElementById('verifyEmailBtn')?.addEventListener('click', async () => {
+  const code = document.getElementById('verifyCodeInput').value.trim();
+  if (!code) { showToast('Enter the code', 'error'); return; }
+  const res = await fetch(`${API}/auth/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: user.email, code }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'That code did not work', 'error'); return; }
+  user.email_verified = true;
+  localStorage.setItem('synctact_user', JSON.stringify(user));
+  document.getElementById('verifyBanner')?.classList.add('hidden');
+  showToast('Email confirmed');
+});
+
+document.getElementById('resendVerifyBtn')?.addEventListener('click', async () => {
+  const res = await authFetch('/auth/verify/request', 'POST');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not send a code', 'error'); return; }
+  const note = document.getElementById('verifyDevCode');
+  if (data.dev_code && note) {
+    note.textContent = 'Code: ' + data.dev_code;
+    document.getElementById('verifyCodeInput').value = data.dev_code;
+  } else if (data.already) {
+    document.getElementById('verifyBanner')?.classList.add('hidden');
+  } else {
+    showToast(data.delivered ? 'Code sent' : 'Email is not set up on this server');
+  }
+});
 
 if (!user || !token) {
   document.getElementById('authGate').classList.remove('hidden');

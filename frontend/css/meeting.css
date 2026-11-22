@@ -839,3 +839,7 @@
 }
 .wb-size-range { width: 80px; cursor: pointer; accent-color: var(--purple); }
 #whiteboardCanvas { flex: 1; display: block; cursor: crosshair; touch-action: none; background: #ffffff; }
+.relay-note { font-size: 0.8rem; color: var(--text-muted); margin: 8px 0 12px; line-height: 1.45; }
+.wait-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.wait-row button { border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text-bright); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 0.75rem; }
+.wait-row button.admit { background: var(--purple); border-color: var(--purple); }
