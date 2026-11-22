@@ -45,9 +45,11 @@ async function _loadIceConfig() {
 const DISCONNECT_GRACE_MS = 8000;
 
 class SyncTactRTC {
-  constructor({ roomCode, displayName, onPeerJoined, onPeerLeft, onPeerStream, onMessage, onParticipantsUpdate, onData }) {
+  constructor({ roomCode, displayName, host, ticket, onPeerJoined, onPeerLeft, onPeerStream, onMessage, onParticipantsUpdate, onData, onWaiting, onDenied, onAdmitted, onKnock, onKnockCancel, onBadPasscode }) {
     this.roomCode   = roomCode;
     this.localName  = displayName;
+    this.isHost     = !!host;
+    this.ticket     = ticket || '';
     this.peerId     = this._genId();
 
     this.peers      = new Map();  // peerId -> { pc, stream, name, pendingIce, disconnectTimer }
@@ -66,6 +68,12 @@ class SyncTactRTC {
     this.onMessage            = onMessage            || (() => {});
     this.onParticipantsUpdate = onParticipantsUpdate || (() => {});
     this.onData               = onData               || (() => {});  // custom events
+    this.onWaiting            = onWaiting            || (() => {});
+    this.onDenied             = onDenied             || (() => {});
+    this.onAdmitted           = onAdmitted           || (() => {});
+    this.onKnock              = onKnock              || (() => {});
+    this.onKnockCancel        = onKnockCancel        || (() => {});
+    this.onBadPasscode        = onBadPasscode        || (() => {});
   }
 
   _resolveWS() {
@@ -75,7 +83,11 @@ class SyncTactRTC {
         (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
           ? `${location.hostname}:8000`
           : location.host);
-    return `${base}/ws/${this.roomCode}/${this.peerId}/${encodeURIComponent(this.localName)}`;
+    const params = new URLSearchParams();
+    if (this.isHost) params.set('host', '1');
+    if (this.ticket) params.set('ticket', this.ticket);
+    const q = params.toString();
+    return `${base}/ws/${this.roomCode}/${this.peerId}/${encodeURIComponent(this.localName)}${q ? '?' + q : ''}`;
   }
 
   _genId() {
@@ -124,11 +136,42 @@ class SyncTactRTC {
     }
   }
 
+  admit(peerId) { this._send({ type: 'admit', peer_id: peerId }); }
+  deny(peerId)  { this._send({ type: 'deny', peer_id: peerId }); }
+
   /* =========== SIGNALING HANDLER =========== */
   async _handleMessage(msg) {
     switch (msg.type) {
 
+      case 'bad_passcode': {
+        this._disconnecting = true;
+        try { this.ws && this.ws.close(); } catch (e) {}
+        this.onBadPasscode(msg);
+        break;
+      }
+
+      case 'waiting': {
+        this.onWaiting(msg);
+        break;
+      }
+
+      case 'denied': {
+        this.onDenied(msg);
+        break;
+      }
+
+      case 'knock': {
+        this.onKnock(msg);
+        break;
+      }
+
+      case 'knock_cancel': {
+        this.onKnockCancel(msg);
+        break;
+      }
+
       case 'room_state': {
+        this.onAdmitted(msg);
         // Existing peers in room (also sent again after we reconnect)
         for (const peer of (msg.peers || [])) {
           if (peer.id !== this.peerId) {

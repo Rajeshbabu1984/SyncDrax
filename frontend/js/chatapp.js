@@ -82,6 +82,9 @@ let typingTimers  = {};      // channel/dm → timer
 let emojiTarget   = null;    // 'input' or message_id for reaction
 let pendingEmoji  = '💬';   // selected channel emoji
 let unread        = {};      // { cid: count }
+let serverUnread  = {};      // { serverId: count } — survives a refresh
+let _readTimer    = null;
+let _unreadRefreshTimer = null;
 let allUsers      = [];      // [{id, name, avatar_url, status}] from /chat/users
 let threadParentId   = null;
 let threadParentData = null;
@@ -121,6 +124,14 @@ async function initChat() {
     if (!me) return;
     user.role  = me.role;
     user.title = me.title;
+    user.email_verified = me.email_verified;
+    localStorage.setItem('synctact_user', JSON.stringify(user));
+    const banner = document.getElementById('verifyBanner');
+    if (banner) {
+      const show = me.email_verified === false;
+      banner.classList.toggle('hidden', !show);
+      if (show) banner.style.display = 'flex';
+    }
   });
 
   buildEmojiPicker();
@@ -130,12 +141,19 @@ async function initChat() {
   try { await loadServers(); }  catch (e) { console.warn('[init] servers', e); }
   try { await loadChannels(); } catch (e) { console.warn('[init] channels', e); showToast('Could not load channels — retrying when reconnected', 'error'); }
   try { await loadUsers(); }    catch (e) { console.warn('[init] users', e); }
+  try { await loadUnreads(); }  catch (e) { console.warn('[init] unreads', e); }
   try { loadCategories(); } catch (e) { console.warn('[init] categories', e); }
   try { loadMyProfile(); }  catch (e) { console.warn('[init] profile', e); }
   connectWS();
 
   const joinedViaInvite = await redeemPendingInvite();
-  if (!joinedViaInvite && channels.length) openChannel(channels[0]);
+  const wantedChannel = sessionStorage.getItem('synctact_open_channel');
+  if (wantedChannel) sessionStorage.removeItem('synctact_open_channel');
+  const savedChannel = wantedChannel || localStorage.getItem('synctact_channel');
+  const saved = channels.find(c => String(c.id) === String(savedChannel));
+  if (!joinedViaInvite && saved) openChannel(saved);
+  else if (!joinedViaInvite && channels.length) openChannel(channels[0]);
+  maybeShowSetup();
 
   // Event listeners
   sendBtn.addEventListener('click', sendMessage);
@@ -352,9 +370,18 @@ function handleServerMsg(msg) {
         appendMessage(m, false);
         if (wasAtBottom) scrollToBottom();
         else notifyUnread();
-      } else {
-        unread[m.channel_id] = (unread[m.channel_id] || 0) + 1;
-        updateUnreadBadge(m.channel_id);
+        if (m.sender_id !== user.id) scheduleMarkRead('channel', m.channel_id, m.id);
+      } else if (m.sender_id !== user.id) {
+        const known = channels.some(c => Number(c.id) === Number(m.channel_id));
+        if (known) {
+          unread[m.channel_id] = (Number(unread[m.channel_id]) || 0) + 1;
+          const sid = String(activeServerId || 0);
+          serverUnread[sid] = (Number(serverUnread[sid]) || 0) + 1;
+          updateUnreadBadge(m.channel_id);
+          renderServerRail();
+        } else {
+          scheduleUnreadRefresh();
+        }
       }
       // Volt recurring task / webhook link: auto-open only for the bot owner; everyone else gets a clickable prompt
       if (msg.open_url && m.bot_name && /^https:\/\//i.test(msg.open_url)) {
@@ -389,6 +416,7 @@ function handleServerMsg(msg) {
         if (m.sender_id === other) typingBar.textContent = '';
         appendMessage(m, false);
         scrollToBottom();
+        if (m.sender_id !== user.id) scheduleMarkRead('dm', other, m.id);
       } else if (m.sender_id !== user.id) {
         unread[`dm_${other}`] = (unread[`dm_${other}`] || 0) + 1;
         updateDmBadge(other);
@@ -677,6 +705,13 @@ function renderServerRail() {
       b.textContent = ((s.name || '?').trim().charAt(0) || '?').toUpperCase();
       b.style.background = SERVER_COLORS[s.id % SERVER_COLORS.length];
     }
+    const missed = Number(serverUnread[String(s.id)] || 0);
+    if (missed > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'server-unread';
+      badge.textContent = missed > 9 ? '9+' : String(missed);
+      b.appendChild(badge);
+    }
     b.addEventListener('click', () => selectServer(s.id));
     rail.appendChild(b);
   });
@@ -834,6 +869,20 @@ async function deleteActiveServer() {
   showToast(`Deleted ${srv.name}`);
 }
 document.getElementById('serverRenameBtn')?.addEventListener('click', renameActiveServer);
+document.getElementById('serverPublicCheck')?.addEventListener('change', async (e) => {
+  if (!activeServerId) return;
+  const on = e.target.checked;
+  const res = await authFetch(`/servers/${activeServerId}`, 'PATCH', { is_public: on });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    e.target.checked = !on;
+    showToast(data.detail || 'Could not update the server', 'error');
+    return;
+  }
+  const srv = servers.find(s => s.id === activeServerId);
+  if (srv) srv.is_public = !!data.is_public;
+  showToast(on ? 'This server is listed on Explore Channels' : 'This server is hidden from Explore Channels');
+});
 
 async function openServerMembers() {
   const srv = servers.find(s => s.id === activeServerId);
@@ -843,6 +892,12 @@ async function openServerMembers() {
   const canRename = srv.role === 'owner' || srv.role === 'moderator';
   row.style.display = canRename ? 'flex' : 'none';
   document.getElementById('serverRenameInput').value = srv.name;
+  const publicRow = document.getElementById('serverPublicRow');
+  const publicCheck = document.getElementById('serverPublicCheck');
+  if (publicRow && publicCheck) {
+    publicRow.style.display = canRename ? 'flex' : 'none';
+    publicCheck.checked = !!srv.is_public;
+  }
   const delBtn = document.getElementById('deleteServerBtn');
   if (delBtn) delBtn.style.display = srv.role === 'owner' && !srv.is_home ? '' : 'none';
   document.getElementById('serverMembersOverlay').classList.remove('hidden');
@@ -1153,8 +1208,15 @@ async function openChannel(ch) {
   saveDraft();
   activeType  = 'channel';
   activeId    = ch.id;
+  localStorage.setItem('synctact_channel', ch.id);
   activeDmName = '';
+  const prevUnread = Number(unread[ch.id] || 0);
   unread[ch.id] = 0;
+  if (prevUnread) {
+    const sid = String(ch.server_id || activeServerId || 0);
+    serverUnread[sid] = Math.max(0, (Number(serverUnread[sid]) || 0) - prevUnread);
+    renderServerRail();
+  }
   chatTitle.textContent  = ch.name;
   chatDesc.textContent   = ch.description || '';
   msgInput.placeholder   = `Message ${ch.name}`;
@@ -1248,7 +1310,8 @@ function renderDmList() {
     li.className = `ch-item${activeType === 'dm' && activeId === numId ? ' active' : ''}`;
     li.dataset.uid = uid;
     const initial = info.name.charAt(0).toUpperCase();
-    const badge   = unread[`dm_${uid}`] ? `<span class="ch-badge">${unread[`dm_${uid}`]}</span>` : '';
+    const dmCount = Number(unread[`dm_${uid}`] || 0);
+    const badge   = dmCount ? `<span class="ch-badge">${dmCount > 99 ? '99+' : dmCount}</span>` : '';
     const statusText = info.status ? `<span style="font-size:.65rem;color:var(--text-muted);margin-left:4px;">${esc(info.status)}</span>` : '';
     const avatarInner = info.avatar_url
       ? `<img class="dm-avatar-img" src="${API + info.avatar_url}" alt="" />`
@@ -1322,10 +1385,50 @@ async function loadMessages(type, id) {
   messagesWrap.innerHTML = '';
   if (!msgs.length) {
     messagesWrap.innerHTML = '<div class="empty-msgs" style="color:var(--text-muted);font-size:.85rem;padding:20px 0;text-align:center;">No messages yet. Say hello! 👋</div>';
+    persistRead(type, id);
     return;
   }
   msgs.forEach(m => appendMessage(m, true));
   scrollToBottom();
+  const newest = msgs[msgs.length - 1];
+  persistRead(type, id, newest && newest.id);
+}
+
+async function loadUnreads() {
+  const res = await authFetch('/chat/unreads');
+  if (!res.ok) return;
+  const data = await res.json();
+  unread = {};
+  Object.entries(data.channels || {}).forEach(([id, n]) => { unread[id] = Number(n) || 0; });
+  Object.entries(data.dms || {}).forEach(([id, n]) => { unread[`dm_${id}`] = Number(n) || 0; });
+  serverUnread = {};
+  Object.entries(data.servers || {}).forEach(([id, n]) => { serverUnread[id] = Number(n) || 0; });
+  if (activeType === 'channel' && activeId != null) {
+    const n = Number(unread[activeId] || 0);
+    const sid = String(activeServerId || 0);
+    if (n && serverUnread[sid]) serverUnread[sid] = Math.max(0, serverUnread[sid] - n);
+    unread[activeId] = 0;
+  }
+  if (activeType === 'dm' && activeId != null) unread[`dm_${activeId}`] = 0;
+  renderChannelList();
+  renderDmList();
+  renderServerRail();
+}
+
+function persistRead(type, id, messageId) {
+  const body = type === 'channel' ? { channel_id: Number(id) } : { peer_id: Number(id) };
+  if (messageId) body.message_id = Number(messageId);
+  authFetch('/chat/read', 'PUT', body).catch(() => {});
+}
+
+function scheduleMarkRead(type, id, messageId) {
+  clearTimeout(_readTimer);
+  _readTimer = setTimeout(() => persistRead(type, id, messageId), 300);
+}
+
+function scheduleUnreadRefresh() {
+  clearTimeout(_unreadRefreshTimer);
+  _unreadRefreshTimer = setTimeout(() => { loadUnreads().catch(() => {}); }, 400);
 }
 
 function appendMessage(m, initial) {
@@ -2339,7 +2442,8 @@ function _buildChannelLi(ch) {
   if (unread[ch.id] && ch.channel_type !== 'voice') {
     const badge = document.createElement('span');
     badge.className = 'ch-badge';
-    badge.textContent = String(unread[ch.id]);
+    const n = Number(unread[ch.id] || 0);
+    badge.textContent = n > 99 ? '99+' : String(n);
     li.appendChild(badge);
   }
   if (ch.channel_type === 'voice') {
@@ -2593,7 +2697,7 @@ async function generateInvite() {
   const res = await authFetch('/invite', 'POST', body);
   if (!res.ok) { showToast('Failed to generate invite', 'error'); return; }
   const data = await res.json();
-  const inviteUrl = new URL(`chat.html?invite=${encodeURIComponent(data.code)}`, location.href).href;
+  const inviteUrl = new URL(`invite.html?code=${encodeURIComponent(data.code)}`, location.href).href;
   document.getElementById('inviteLinkInput').value = inviteUrl;
   document.getElementById('inviteCopyWrap').classList.remove('hidden');
 }
@@ -4599,6 +4703,7 @@ async function loadEvents() {
       <div class="event-title">${esc(e.title)}</div>
       ${e.description ? `<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:4px;">${esc(e.description)}</div>` : ''}
       <div class="event-time"><i class="fa-regular fa-clock"></i> ${new Date(e.starts_at).toLocaleString()}${e.ends_at ? ' → ' + new Date(e.ends_at).toLocaleTimeString() : ''}</div>
+      ${e.meeting_code ? `<div style="margin:6px 0;"><a href="meeting.html?room=${encodeURIComponent(e.meeting_code)}${e.creator_id===user.id?'&host=true':''}&back=chat.html" style="color:var(--purple-l);font-size:.8rem;">${e.creator_id===user.id ? 'Start meeting' : 'Join meeting'} ${esc(e.meeting_code)}</a></div>` : ''}
       <div class="event-rsvps">
         <button class="rsvp-btn yes" onclick="rsvpEvent(${e.id},'yes')"><i class="fa-solid fa-check"></i> Yes (${e.rsvps.filter(r=>r.status==='yes').length})</button>
         <button class="rsvp-btn maybe" onclick="rsvpEvent(${e.id},'maybe')"><i class="fa-solid fa-circle-question"></i> Maybe (${e.rsvps.filter(r=>r.status==='maybe').length})</button>
@@ -4631,7 +4736,11 @@ async function createCalendarEvent() {
   const end   = eventInputToIso(document.getElementById('eventEnd').value);
   if (!title || !start) { showToast('Title and start time required', 'error'); return; }
   if (document.getElementById('eventEnd').value && !end) { showToast('That end time is not valid', 'error'); return; }
-  const body = { title, description: desc || null, starts_at: start, channel_id: activeType === 'channel' ? activeId : null };
+  const body = {
+    title, description: desc || null, starts_at: start,
+    channel_id: activeType === 'channel' ? activeId : null,
+    create_meeting: !!document.getElementById('eventMakeMeeting')?.checked,
+  };
   if (end) body.ends_at = end;
   const res = await authFetch('/events', 'POST', body);
   if (!res.ok) {
@@ -4967,12 +5076,93 @@ function initNewFeatureHandlers2() {
 (function captureInviteParam() {
   const params = new URLSearchParams(location.search);
   const code = params.get('invite');
-  if (!code) return;
-  if (/^[\w-]{4,64}$/.test(code)) sessionStorage.setItem('synctact_pending_invite', code);
+  if (code && /^[\w-]{4,64}$/.test(code)) sessionStorage.setItem('synctact_pending_invite', code);
+  const channel = params.get('channel');
+  const server = params.get('server');
+  if (channel && /^\d+$/.test(channel)) sessionStorage.setItem('synctact_open_channel', channel);
+  if (server && /^\d+$/.test(server)) localStorage.setItem('synctact_server', server);
+  if (!code && !channel && !server) return;
   params.delete('invite');
+  params.delete('channel');
+  params.delete('server');
   const qs = params.toString();
   history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
 })();
+
+function maybeShowSetup() {
+  if (localStorage.getItem('synctact_needs_setup') !== '1') return;
+  document.getElementById('setupOverlay')?.classList.remove('hidden');
+}
+
+function dismissSetup() {
+  localStorage.removeItem('synctact_needs_setup');
+  document.getElementById('setupOverlay')?.classList.add('hidden');
+}
+
+document.getElementById('setupSkipBtn')?.addEventListener('click', dismissSetup);
+document.getElementById('setupOverlay')?.addEventListener('click', e => {
+  if (e.target === e.currentTarget) dismissSetup();
+});
+document.getElementById('setupCopyBtn')?.addEventListener('click', () => {
+  const input = document.getElementById('setupInviteLink');
+  if (input?.value) navigator.clipboard.writeText(input.value).then(() => showToast('Invite copied'));
+});
+document.getElementById('setupCreateBtn')?.addEventListener('click', async () => {
+  const name = document.getElementById('setupServerName').value.trim();
+  if (!name) { showToast('Give the server a name'); return; }
+  const res = await authFetch('/servers', 'POST', { name });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not create the server', 'error'); return; }
+  servers.push(data);
+  activeServerId = data.id;
+  localStorage.setItem('synctact_server', data.id);
+  renderServerRail();
+  await loadChannels();
+  if (!channels.length && data.channels) channels = data.channels;
+  renderChannelList();
+  if (channels.length) openChannel(channels[0]);
+  const inv = await authFetch('/invite', 'POST', { server_id: data.id });
+  const invData = await inv.json().catch(() => ({}));
+  if (inv.ok && invData.code) {
+    const link = new URL(`invite.html?code=${encodeURIComponent(invData.code)}`, location.href).href;
+    const box = document.getElementById('setupInviteBox');
+    document.getElementById('setupInviteLink').value = link;
+    box?.classList.remove('hidden');
+  }
+  document.getElementById('setupCreateBtn').disabled = true;
+  dismissSetup();
+  document.getElementById('setupOverlay')?.classList.remove('hidden');
+});
+
+document.getElementById('verifyEmailBtn')?.addEventListener('click', async () => {
+  const code = document.getElementById('verifyCodeInput').value.trim();
+  if (!code) { showToast('Enter the code', 'error'); return; }
+  const res = await fetch(`${API}/auth/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: user.email, code }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'That code did not work', 'error'); return; }
+  user.email_verified = true;
+  localStorage.setItem('synctact_user', JSON.stringify(user));
+  document.getElementById('verifyBanner')?.classList.add('hidden');
+  showToast('Email confirmed');
+});
+
+document.getElementById('resendVerifyBtn')?.addEventListener('click', async () => {
+  const res = await authFetch('/auth/verify/request', 'POST');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.detail || 'Could not send a code', 'error'); return; }
+  const note = document.getElementById('verifyDevCode');
+  if (data.dev_code && note) {
+    note.textContent = 'Code: ' + data.dev_code;
+    document.getElementById('verifyCodeInput').value = data.dev_code;
+  } else if (data.already) {
+    document.getElementById('verifyBanner')?.classList.add('hidden');
+  } else {
+    showToast(data.delivered ? 'Code sent' : 'Email is not set up on this server');
+  }
+});
 
 if (!user || !token) {
   document.getElementById('authGate').classList.remove('hidden');

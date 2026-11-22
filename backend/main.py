@@ -54,6 +54,7 @@ from starlette.websockets import WebSocketState
 import bcrypt as _bcrypt
 import botcode
 from sqlalchemy import Column, LargeBinary
+from sqlalchemy import func as sa_func
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -142,6 +143,7 @@ class User(SQLModel, table=True):
     totp_secret:     Optional[str]  = Field(default=None)
     totp_enabled:    bool           = Field(default=False)
     title:           Optional[str]  = Field(default=None)       # custom title e.g. "CEO & Founder"
+    email_verified:  bool           = Field(default=True)       # new signups set this False
     created_at:      datetime       = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -289,6 +291,7 @@ class ChatServer(SQLModel, table=True):
     name:       str
     owner_id:   int           = Field(default=0)
     is_home:    bool          = Field(default=False)
+    is_public:  bool          = Field(default=False)  # listed on the Explore Channels page
     icon_url:   Optional[str] = Field(default=None)
     created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -420,6 +423,17 @@ class UserSession(SQLModel, table=True):
     active:     bool          = Field(default=True)
 
 
+class AuthCode(SQLModel, table=True):
+    """One-time code for password reset or email confirmation."""
+    id:         Optional[int] = Field(default=None, primary_key=True)
+    email:      str           = Field(index=True)
+    purpose:    str           = Field(index=True)  # reset | verify
+    code_hash:  str
+    expires_at: datetime
+    used:       bool          = Field(default=False)
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class WebhookConfig(SQLModel, table=True):
     id:         Optional[int] = Field(default=None, primary_key=True)
     channel_id: int           = Field(index=True)
@@ -445,6 +459,15 @@ class ServerSetting(SQLModel, table=True):
     value:      str           = Field(default='')
     updated_by: Optional[int] = Field(default=None)
     updated_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ReadCursor(SQLModel, table=True):
+    """How far a person has read a channel or a direct conversation. Survives a refresh."""
+    id:           Optional[int] = Field(default=None, primary_key=True)
+    user_id:      int           = Field(index=True)
+    channel_id:   Optional[int] = Field(default=None, index=True)
+    peer_id:      Optional[int] = Field(default=None, index=True)
+    last_read_id: int           = Field(default=0)
 
 
 class UserBlock(SQLModel, table=True):
@@ -481,6 +504,8 @@ class CalendarEvent(SQLModel, table=True):
     description:  Optional[str] = Field(default=None)
     starts_at:    datetime
     ends_at:      Optional[datetime] = Field(default=None)
+    meeting_code: Optional[str] = Field(default=None)
+    reminded:     bool          = Field(default=False)
     created_at:   datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -548,6 +573,7 @@ def migrate_db():
                 ('totp_secret',  'ALTER TABLE user ADD COLUMN totp_secret VARCHAR DEFAULT NULL'),
                 ('totp_enabled', 'ALTER TABLE user ADD COLUMN totp_enabled BOOLEAN DEFAULT FALSE'),
                 ('title',        'ALTER TABLE user ADD COLUMN title VARCHAR DEFAULT NULL'),
+                ('email_verified', 'ALTER TABLE user ADD COLUMN email_verified BOOLEAN DEFAULT TRUE'),
             ]:
                 if col not in existing:
                     conn.execute(sqlalchemy.text(_ddl(ddl)))
@@ -569,6 +595,11 @@ def migrate_db():
             if 'icon_url' not in existing:
                 conn.execute(sqlalchemy.text(_ddl(
                     'ALTER TABLE chatserver ADD COLUMN icon_url VARCHAR DEFAULT NULL')))
+            if 'is_public' not in existing:
+                conn.execute(sqlalchemy.text(_ddl(
+                    'ALTER TABLE chatserver ADD COLUMN is_public BOOLEAN DEFAULT FALSE')))
+                conn.execute(sqlalchemy.text(
+                    "UPDATE chatserver SET is_public = TRUE WHERE is_home = TRUE"))
         if 'bot' in tables:
             existing = {c['name'] for c in insp.get_columns('bot')}
             for col, ddl in [
@@ -585,6 +616,14 @@ def migrate_db():
             if 'server_id' not in existing:
                 conn.execute(sqlalchemy.text(_ddl(
                     'ALTER TABLE invitelink ADD COLUMN server_id INTEGER DEFAULT NULL')))
+        if 'calendarevent' in tables:
+            existing = {c['name'] for c in insp.get_columns('calendarevent')}
+            for col, ddl in [
+                ('meeting_code', 'ALTER TABLE calendarevent ADD COLUMN meeting_code VARCHAR DEFAULT NULL'),
+                ('reminded',     'ALTER TABLE calendarevent ADD COLUMN reminded BOOLEAN DEFAULT FALSE'),
+            ]:
+                if col not in existing:
+                    conn.execute(sqlalchemy.text(_ddl(ddl)))
         if 'serverban' in tables:
             existing = {c['name'] for c in insp.get_columns('serverban')}
             if 'user_name' not in existing:
@@ -671,6 +710,69 @@ def send_email(to_email: str, subject: str, text_body: str, html_body: Optional[
         log.error("Failed to send email to %s via %s: %s", to_email, provider, e)
     return False
 
+
+def _dev_codes_visible() -> bool:
+    """Show a code on screen only when this server cannot email it and is not the hosted deploy."""
+    if os.getenv("RENDER"):
+        return False
+    if os.getenv("SYNCTACT_DEV_CODES", "1") == "0":
+        return False
+    return email_provider() is None
+
+
+def _issue_code(session: Session, email: str, purpose: str, minutes: int = 30) -> str:
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    now = datetime.now(timezone.utc)
+    for old in session.exec(select(AuthCode).where(
+        AuthCode.email == email, AuthCode.purpose == purpose, AuthCode.used == False  # noqa: E712
+    )).all():
+        old.used = True
+        session.add(old)
+    session.add(AuthCode(
+        email=email, purpose=purpose,
+        code_hash=hashlib.sha256(code.encode()).hexdigest(),
+        expires_at=now + timedelta(minutes=minutes),
+    ))
+    session.commit()
+    return code
+
+
+def _take_code(session: Session, email: str, purpose: str, code: str) -> bool:
+    digest = hashlib.sha256((code or "").strip().encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+    row = session.exec(select(AuthCode).where(
+        AuthCode.email == email, AuthCode.purpose == purpose,
+        AuthCode.code_hash == digest, AuthCode.used == False  # noqa: E712
+    ).order_by(AuthCode.id.desc())).first()
+    if not row:
+        return False
+    expires = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=timezone.utc)
+    if expires < now:
+        return False
+    row.used = True
+    session.add(row)
+    session.commit()
+    return True
+
+
+def _code_delivery(session: Session, email: str, purpose: str, subject: str, text: str) -> dict:
+    code = _issue_code(session, email, purpose)
+    body = text.format(code=code)
+    delivered = send_email(email, subject, body)
+    out = {"delivered": delivered}
+    if not delivered and _dev_codes_visible():
+        out["dev_code"] = code
+    return out
+
+
+def _public_user(user: User) -> dict:
+    return {
+        "id": user.id, "name": user.name, "email": user.email,
+        "role": getattr(user, "role", "member"),
+        "email_verified": bool(getattr(user, "email_verified", True)),
+        "avatar_url": user.avatar_url,
+        "title": getattr(user, "title", None),
+    }
 
 
 # -------------------------------------------------------------
@@ -914,7 +1016,8 @@ def _can_view_message(user: User, cm: "ChatMessage") -> bool:
 
 def _server_dict(srv: "ChatServer", role: str) -> dict:
     return {"id": srv.id, "name": srv.name, "owner_id": srv.owner_id,
-            "is_home": srv.is_home, "role": role, "icon_url": srv.icon_url}
+            "is_home": srv.is_home, "is_public": bool(getattr(srv, "is_public", False)),
+            "role": role, "icon_url": srv.icon_url}
 
 
 def _server_membership(session: Session, user_id: int, server_id: int) -> Optional["ServerMember"]:
@@ -1035,7 +1138,7 @@ def _ensure_home_server() -> None:
         orphans = session.exec(select(Channel).where(Channel.server_id == None)).all()  # noqa: E711
         if not home:
             first = session.exec(select(User).where(User.role != "bot").order_by(User.id)).first()
-            home = ChatServer(name="SyncTact", owner_id=first.id if first else 0, is_home=True)
+            home = ChatServer(name="SyncTact", owner_id=first.id if first else 0, is_home=True, is_public=True)
             session.add(home)
             session.commit()
             session.refresh(home)
@@ -1120,6 +1223,22 @@ class SignUpRequest(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     user:  dict
+    verification: Optional[dict] = None
+
+
+class ForgotRequest(BaseModel):
+    email: str
+
+
+class ResetRequest(BaseModel):
+    email:    str
+    code:     str
+    password: str
+
+
+class VerifyRequest(BaseModel):
+    email: str
+    code:  str
 
 
 # -------------------------------------------------------------
@@ -1202,8 +1321,11 @@ def on_startup():
     elif TURN_URLS and TURN_USERNAME and TURN_CREDENTIAL:
         log.info("TURN relay: %s", TURN_URLS.split(",")[0].strip())
     else:
-        log.warning("No TURN server configured: video calls only connect when both people can reach "
-                    "each other directly. Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN.")
+        if os.getenv("SYNCTACT_DISABLE_PUBLIC_TURN") == "1":
+            log.warning("No TURN server configured: video calls only connect when both people can reach "
+                        "each other directly. Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN.")
+        else:
+            log.info("TURN relay: public fallback (set Cloudflare or Metered keys to use your own)")
     # Fix corrupted emoji channel names (from PowerShell rename mangling multi-byte chars)
     _DEFAULT_CHANNELS = [
         (1, "\U0001f4e3 general",  "Company-wide announcements and general chat"),
@@ -1231,6 +1353,45 @@ def on_startup():
 
 
 import asyncio as _asyncio
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+async def _remind_due_events(sess: Session, now: datetime) -> None:
+    """When an event starts, post in its channel and email the people who said yes."""
+    events = sess.exec(select(CalendarEvent).where(CalendarEvent.reminded == False)).all()  # noqa: E712
+    for ev in events:
+        start = _as_utc(ev.starts_at)
+        if start > now:
+            continue
+        ev.reminded = True
+        sess.add(ev)
+        if start < now - timedelta(minutes=15):
+            sess.commit()
+            continue
+        when = start.strftime("%H:%M UTC")
+        join = f" Join the meeting: meeting.html?room={ev.meeting_code}" if ev.meeting_code else ""
+        text = f"📅 {ev.title} is starting ({when}).{join}"
+        if ev.channel_id:
+            cm = ChatMessage(channel_id=ev.channel_id, sender_id=0, sender_name="SyncTact",
+                             content=text, bot_name="SyncTact")
+            sess.add(cm)
+            sess.commit()
+            sess.refresh(cm)
+            await _chat_broadcast({"type": "channel_message", "message": _msg_dict(cm)})
+        else:
+            sess.commit()
+        people = {ev.creator_id}
+        for rsvp in sess.exec(select(CalendarEventRsvp).where(
+            CalendarEventRsvp.event_id == ev.id, CalendarEventRsvp.status == "yes"
+        )).all():
+            people.add(rsvp.user_id)
+        for uid in people:
+            person = sess.get(User, uid)
+            if person and person.email and "@" in person.email and not person.email.endswith(".internal"):
+                send_email(person.email, f"{ev.title} is starting", text)
 
 
 async def _run_scheduler():
@@ -1295,6 +1456,7 @@ async def _run_scheduler():
                             await _chat_broadcast(_bcast)
                 await _run_scheduled_bot_jobs(sess, now)
                 await _run_scheduled_bot_scripts(sess, now)
+                await _remind_due_events(sess, now)
         except Exception as exc:
             log.warning("Scheduler error: %s", exc)
 
@@ -1319,14 +1481,19 @@ def signup(req: SignUpRequest, request: Request, session: Session = Depends(get_
     if session.exec(select(User).where(User.email == email)).first():
         raise HTTPException(status_code=409, detail="An account with that email already exists")
 
-    user = User(name=name, email=email, hashed_password=hash_password(req.password))
+    user = User(name=name, email=email, hashed_password=hash_password(req.password), email_verified=False)
     session.add(user)
     session.commit()
     session.refresh(user)
     _my_server_ids(session, user.id)   # home server membership
     token = _create_session(session, user, request)
+    verification = _code_delivery(
+        session, user.email, "verify",
+        "Confirm your SyncTact email",
+        "Your SyncTact confirmation code is {code}. It expires in 30 minutes.",
+    )
     log.info("New user signed up: %s (%s)", user.name, user.email)
-    return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
+    return {"token": token, "user": _public_user(user), "verification": verification}
 
 
 @app.post("/auth/signin", response_model=AuthResponse)
@@ -1345,19 +1512,81 @@ def signin(req: SignInRequest, request: Request, session: Session = Depends(get_
             raise HTTPException(status_code=401, detail="Invalid two-factor code")
     token = _create_session(session, user, request)
     log.info("User signed in: %s (%s)", user.name, user.email)
-    return {"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}
+    return {"token": token, "user": _public_user(user)}
+
+
+@app.post("/auth/forgot")
+@limiter.limit("5/minute")
+def forgot_password(req: ForgotRequest, request: Request, session: Session = Depends(get_session)):
+    """Always answers the same way when the address is unknown, so the form does not reveal accounts."""
+    email = (req.email or "").strip().lower()
+    user = session.exec(select(User).where(User.email == email)).first() if email else None
+    if not user or user.role == "bot":
+        return {"ok": True, "delivered": False}
+    sent = _code_delivery(
+        session, email, "reset",
+        "Reset your SyncTact password",
+        "Your SyncTact password reset code is {code}. It expires in 30 minutes. "
+        "If you did not ask for this, you can ignore it.",
+    )
+    return {"ok": True, **sent}
+
+
+@app.post("/auth/reset")
+@limiter.limit("10/minute")
+def reset_password(req: ResetRequest, request: Request, session: Session = Depends(get_session)):
+    email = (req.email or "").strip().lower()
+    if len(req.password or "") < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    user = session.exec(select(User).where(User.email == email)).first()
+    if not user or not _take_code(session, email, "reset", req.code):
+        raise HTTPException(status_code=400, detail="That code is invalid or expired")
+    user.hashed_password = hash_password(req.password)
+    session.add(user)
+    for row in session.exec(select(UserSession).where(
+        UserSession.user_id == user.id, UserSession.active == True  # noqa: E712
+    )).all():
+        row.active = False
+        session.add(row)
+    session.commit()
+    log.info("Password reset for %s", email)
+    return {"ok": True}
+
+
+@app.post("/auth/verify")
+@limiter.limit("10/minute")
+def verify_email(req: VerifyRequest, request: Request, session: Session = Depends(get_session)):
+    email = (req.email or "").strip().lower()
+    user = session.exec(select(User).where(User.email == email)).first()
+    if not user or not _take_code(session, email, "verify", req.code):
+        raise HTTPException(status_code=400, detail="That code is invalid or expired")
+    user.email_verified = True
+    session.add(user)
+    session.commit()
+    return {"ok": True, "user": _public_user(user)}
+
+
+@app.post("/auth/verify/request")
+@limiter.limit("5/minute")
+def verify_email_request(request: Request, current_user: User = Depends(get_current_user),
+                         session: Session = Depends(get_session)):
+    user = session.get(User, current_user.id)
+    if user.email_verified:
+        return {"ok": True, "already": True, "delivered": False}
+    sent = _code_delivery(
+        session, user.email, "verify",
+        "Confirm your SyncTact email",
+        "Your SyncTact confirmation code is {code}. It expires in 30 minutes.",
+    )
+    return {"ok": True, **sent}
 
 
 @app.get("/auth/me")
 def me(current_user: User = Depends(get_current_user)):
-    return {
-        "id": current_user.id, "name": current_user.name, "email": current_user.email,
-        "role": getattr(current_user, "role", "member"),
-        "presence": getattr(current_user, "presence", "online"),
-        "totp_enabled": getattr(current_user, "totp_enabled", False),
-        "avatar_url": current_user.avatar_url,
-        "title": getattr(current_user, "title", None),
-    }
+    data = _public_user(current_user)
+    data["presence"] = getattr(current_user, "presence", "online")
+    data["totp_enabled"] = getattr(current_user, "totp_enabled", False)
+    return data
 
 
 # -------------------------------------------------------------
@@ -1792,11 +2021,12 @@ def pending_reminders(current_user: User = Depends(get_current_user), session: S
 # ─────────────────────────────────────────────────────────────
 
 class EventIn(BaseModel):
-    title:       str
-    description: Optional[str] = None
-    starts_at:   str
-    ends_at:     Optional[str] = None
-    channel_id:  Optional[int] = None
+    title:           str
+    description:     Optional[str] = None
+    starts_at:       str
+    ends_at:         Optional[str] = None
+    channel_id:      Optional[int] = None
+    create_meeting:  bool = False
 
 
 @app.get("/events")
@@ -1812,6 +2042,7 @@ def list_events(channel_id: Optional[int] = None, current_user: User = Depends(g
             "id": e.id, "title": e.title, "description": e.description,
             "starts_at": e.starts_at.isoformat(), "ends_at": e.ends_at.isoformat() if e.ends_at else None,
             "creator_id": e.creator_id, "creator_name": e.creator_name, "channel_id": e.channel_id,
+            "meeting_code": e.meeting_code,
             "rsvps": [{"user_id": r.user_id, "name": r.name, "status": r.status} for r in rsvps],
         })
     return out
@@ -1844,13 +2075,14 @@ def create_event(body: EventIn, current_user: User = Depends(get_current_user), 
     ends_at = _event_time(body.ends_at, "End time")
     if ends_at and ends_at < starts_at:
         raise HTTPException(400, "The end time is before the start time")
+    meeting_code = secrets.token_hex(4).upper() if body.create_meeting else None
     e = CalendarEvent(
         channel_id=body.channel_id, creator_id=current_user.id, creator_name=current_user.name,
         title=title[:200], description=(body.description or None),
-        starts_at=starts_at, ends_at=ends_at,
+        starts_at=starts_at, ends_at=ends_at, meeting_code=meeting_code,
     )
     session.add(e); session.commit(); session.refresh(e)
-    return {"id": e.id, "title": e.title, "starts_at": e.starts_at.isoformat()}
+    return {"id": e.id, "title": e.title, "starts_at": e.starts_at.isoformat(), "meeting_code": meeting_code}
 
 
 @app.post("/events/{event_id}/rsvp")
@@ -1916,14 +2148,17 @@ def update_channel_settings(channel_id: int, body: ChannelSettingsIn,
 
 @app.get("/discovery")
 def server_discovery(session: Session = Depends(get_session)):
-    """Return all non-archived channels with member/message counts."""
+    """Channels on servers the owner has listed publicly."""
+    public_ids = {s.id for s in session.exec(select(ChatServer).where(ChatServer.is_public == True)).all()}  # noqa: E712
     channels = session.exec(select(Channel).where(Channel.archived == False)).all()
     out = []
     for ch in channels:
+        if ch.server_id not in public_ids:
+            continue
         msg_count = len(session.exec(select(ChatMessage).where(ChatMessage.channel_id == ch.id)).all())
         out.append({
             "id": ch.id, "name": ch.name, "description": ch.description or "",
-            "message_count": msg_count,
+            "message_count": msg_count, "server_id": ch.server_id,
             "created_at": ch.created_at.isoformat(),
         })
     return sorted(out, key=lambda x: -x["message_count"])
@@ -2073,8 +2308,15 @@ def admin_delete_user(
 # Utility endpoints
 # -------------------------------------------------------------
 
-# In-memory room registry  { room_code: { peer_id: { ws, name } } }
+# In-memory room registry  { room_code: { peer_id: { ws, name, host } } }
 rooms: Dict[str, Dict[str, dict]] = {}
+room_hosts: Dict[str, str] = {}
+hosted_rooms: Dict[str, float] = {}  # room_code -> unix expiry, set when the host opens the lobby
+room_passes: Dict[str, tuple] = {}  # room_code -> (passcode, unix expiry)
+room_tickets: Dict[str, tuple] = {}  # ticket -> (room_code, unix expiry)
+room_waiting: Dict[str, Dict[str, str]] = {}  # room_code -> peer_id -> display name
+_admit_events: Dict[tuple, asyncio.Event] = {}
+_admit_denied: set = set()
 
 
 async def safe_send(ws: WebSocket, payload: dict):
@@ -2100,6 +2342,15 @@ async def broadcast_to_room(room_code: str, payload: dict, exclude: str | None =
 _STUN_SERVERS = [
     {"urls": "stun:stun.l.google.com:19302"},
     {"urls": "stun:stun1.l.google.com:19302"},
+]
+
+# Public relay used only when this server has no TURN account of its own.
+# Media then crosses the public internet via that relay. Set SYNCTACT_DISABLE_PUBLIC_TURN=1 to turn it off.
+_PUBLIC_TURN = [
+    {"urls": "stun:stun.relay.metered.ca:80"},
+    {"urls": "turn:standard.relay.metered.ca:80", "username": "openrelayproject", "credential": "openrelayproject"},
+    {"urls": "turn:standard.relay.metered.ca:443", "username": "openrelayproject", "credential": "openrelayproject"},
+    {"urls": "turns:standard.relay.metered.ca:443?transport=tcp", "username": "openrelayproject", "credential": "openrelayproject"},
 ]
 
 
@@ -2151,7 +2402,7 @@ async def ice_servers():
     if CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN:
         servers = await _cloudflare_ice_servers()
         if servers:
-            return {"iceServers": servers}
+            return {"iceServers": servers, "relay": "private"}
     if METERED_TURN_API_KEY and METERED_TURN_DOMAIN:
         try:
             async with httpx.AsyncClient(timeout=8) as client:
@@ -2161,11 +2412,16 @@ async def ice_servers():
                 )
             data = r.json() if r.status_code == 200 else None
             if isinstance(data, list) and data:
-                return {"iceServers": data}
+                return {"iceServers": data, "relay": "private"}
             log.warning("Metered TURN credentials failed: HTTP %s", r.status_code)
         except Exception as exc:
             log.warning("Metered TURN credentials failed: %s", exc)
-    return {"iceServers": _STUN_SERVERS + _static_turn_servers()}
+    static = _static_turn_servers()
+    if static:
+        return {"iceServers": _STUN_SERVERS + static, "relay": "private"}
+    if os.getenv("SYNCTACT_DISABLE_PUBLIC_TURN") == "1":
+        return {"iceServers": _STUN_SERVERS, "relay": "none"}
+    return {"iceServers": _STUN_SERVERS + _PUBLIC_TURN, "relay": "public"}
 
 
 @app.get("/health")
@@ -2181,11 +2437,150 @@ async def room_stats():
     }
 
 
+def _host_is_here(room_code: str) -> bool:
+    host_id = room_hosts.get(room_code)
+    return bool(host_id and host_id in rooms.get(room_code, {}))
+
+
+def _room_expects_host(room_code: str) -> bool:
+    expiry = hosted_rooms.get(room_code)
+    if not expiry:
+        return False
+    if expiry < time.time():
+        hosted_rooms.pop(room_code, None)
+        return False
+    return True
+
+
+def _same_secret(given: str, current: str) -> bool:
+    if len(given) != len(current):
+        return False
+    return secrets.compare_digest(given, current)
+
+
+def _active_passcode(room_code: str) -> Optional[str]:
+    entry = room_passes.get(room_code)
+    if not entry:
+        return None
+    secret, expiry = entry
+    if expiry < time.time():
+        room_passes.pop(room_code, None)
+        return None
+    return secret
+
+
+def _ticket_ok(room_code: str, ticket: str) -> bool:
+    if not _active_passcode(room_code):
+        return True
+    info = room_tickets.get(ticket or "")
+    if not info:
+        return False
+    code, expiry = info
+    return code == room_code and expiry >= time.time()
+
+
+@app.post("/rooms/{room_code}/host")
+async def claim_room_host(room_code: str):
+    """The host's lobby calls this so guests wait even before the host clicks Join."""
+    code = room_code.upper()
+    hosted_rooms[code] = time.time() + 60 * 60
+    return {"ok": True, "room": code}
+
+
+@app.get("/rooms/{room_code}/lock")
+async def room_lock(room_code: str):
+    code = room_code.upper()
+    return {"room": code, "locked": _active_passcode(code) is not None}
+
+
+@app.post("/rooms/{room_code}/passcode")
+async def set_room_passcode(room_code: str, body: dict):
+    """Host sets the passcode guests must enter. Send the current one to replace it."""
+    code = room_code.upper()
+    new = str(body.get("passcode") or "").strip()
+    current = _active_passcode(code)
+    given = str(body.get("current") or "").strip()
+    if current and not _same_secret(given, current):
+        raise HTTPException(403, "Wrong passcode")
+    if not new:
+        room_passes.pop(code, None)
+        return {"ok": True, "locked": False}
+    if len(new) < 4 or len(new) > 32:
+        raise HTTPException(400, "Use 4 to 32 characters")
+    room_passes[code] = (new, time.time() + 6 * 60 * 60)
+    hosted_rooms[code] = time.time() + 60 * 60
+    return {"ok": True, "locked": True}
+
+
+@app.post("/rooms/{room_code}/ticket")
+async def room_ticket(room_code: str, body: dict):
+    code = room_code.upper()
+    need = _active_passcode(code)
+    given = str(body.get("passcode") or "").strip()
+    if need and not _same_secret(given, need):
+        raise HTTPException(403, "Wrong passcode")
+    ticket = secrets.token_urlsafe(18)
+    room_tickets[ticket] = (code, time.time() + 6 * 60 * 60)
+    return {"ticket": ticket}
+
+
+async def _release_waiting(room_code: str, peer_id: str, deny: bool = False) -> None:
+    key = (room_code, peer_id)
+    if deny:
+        _admit_denied.add(key)
+    ev = _admit_events.get(key)
+    if ev:
+        ev.set()
+
+
+async def _wait_for_host(ws: WebSocket, room_code: str, peer_id: str, display_name: str) -> bool:
+    """Hold a guest until the host admits them. Returns True when they may enter."""
+    key = (room_code, peer_id)
+    ev = asyncio.Event()
+    _admit_events[key] = ev
+    room_waiting.setdefault(room_code, {})[peer_id] = display_name
+    await safe_send(ws, {"type": "waiting", "room": room_code})
+    host_id = room_hosts.get(room_code)
+    host = rooms.get(room_code, {}).get(host_id) if host_id else None
+    if host:
+        await safe_send(host["ws"], {"type": "knock", "peer_id": peer_id, "name": display_name})
+    try:
+        while not ev.is_set():
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=0.4)
+            except asyncio.TimeoutError:
+                continue
+            except (WebSocketDisconnect, RuntimeError):
+                return False
+        if key in _admit_denied:
+            await safe_send(ws, {"type": "denied"})
+            await ws.close()
+            return False
+        return True
+    finally:
+        _admit_events.pop(key, None)
+        _admit_denied.discard(key)
+        room_waiting.get(room_code, {}).pop(peer_id, None)
+        if host_id and host_id in rooms.get(room_code, {}):
+            await safe_send(rooms[room_code][host_id]["ws"], {"type": "knock_cancel", "peer_id": peer_id})
+
+
 # -------------------------------------------------------------
 @app.websocket("/ws/{room_code}/{peer_id}/{display_name}")
-async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name: str):
+async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name: str, host: int = 0, ticket: str = ""):
     await ws.accept()
     room_code = room_code.upper()
+    display_name = (display_name or "Guest")[:24]
+    wants_host = host == 1
+
+    if not _ticket_ok(room_code, ticket):
+        await safe_send(ws, {"type": "bad_passcode"})
+        await ws.close()
+        return
+
+    if (_host_is_here(room_code) or _room_expects_host(room_code)) and peer_id != room_hosts.get(room_code) and not wants_host:
+        if not await _wait_for_host(ws, room_code, peer_id, display_name):
+            return
 
     # -- Enforce participant limit --
     room_peers = rooms.get(room_code, {})
@@ -2194,9 +2589,13 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
         await ws.close()
         return
 
+    is_host = wants_host and not _host_is_here(room_code)
+    if is_host:
+        room_hosts[room_code] = peer_id
+
     # -- Register peer --
     rooms.setdefault(room_code, {})
-    rooms[room_code][peer_id] = {"ws": ws, "name": display_name}
+    rooms[room_code][peer_id] = {"ws": ws, "name": display_name, "host": is_host or room_hosts.get(room_code) == peer_id}
     log.info("[%s] %s joined as '%s'  (total: %d)", room_code, peer_id, display_name, len(rooms[room_code]))
 
     # -- Send existing peers to new joiner --
@@ -2205,7 +2604,10 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
         for pid, info in rooms[room_code].items()
         if pid != peer_id
     ]
-    await safe_send(ws, {"type": "room_state", "peers": existing})
+    await safe_send(ws, {"type": "room_state", "peers": existing, "host": rooms[room_code][peer_id]["host"]})
+    if rooms[room_code][peer_id]["host"]:
+        for waiting_id, waiting_name in list(room_waiting.get(room_code, {}).items()):
+            await safe_send(ws, {"type": "knock", "peer_id": waiting_id, "name": waiting_name})
 
     # -- Notify existing peers of new joiner --
     await broadcast_to_room(room_code, {
@@ -2238,6 +2640,11 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
                     "ts":        msg.get("ts", 0),
                 }, exclude=peer_id)
 
+            elif msg_type in ("admit", "deny") and room_hosts.get(room_code) == peer_id:
+                target = str(msg.get("peer_id") or "")
+                if (room_code, target) in _admit_events:
+                    await _release_waiting(room_code, target, deny=(msg_type == "deny"))
+
             # -- Raise hand / Reaction / Whiteboard broadcast --
             elif msg_type in ("raise_hand", "reaction", "whiteboard"):
                 await broadcast_to_room(room_code, {
@@ -2264,10 +2671,17 @@ async def ws_endpoint(ws: WebSocket, room_code: str, peer_id: str, display_name:
                 "type":    "peer_left",
                 "peer_id": peer_id,
             })
+            if room_hosts.get(room_code) == peer_id:
+                room_hosts.pop(room_code, None)
+                for (code, waiting_id) in list(_admit_events):
+                    if code == room_code:
+                        await _release_waiting(room_code, waiting_id, deny=False)
 
         # Remove empty rooms
         if room_code in rooms and not rooms[room_code]:
             del rooms[room_code]
+            room_hosts.pop(room_code, None)
+            hosted_rooms.pop(room_code, None)
             log.info("[%s] Room deleted (empty)", room_code)
 
 
@@ -2410,6 +2824,133 @@ def _channel_dict(c: Channel) -> dict:
             "category_id": c.category_id, "server_id": c.server_id,
             "readonly": bool(c.readonly), "archived": bool(c.archived),
             "channel_type": c.channel_type or 'text'}
+
+
+def _as_clauses(where):
+    return where if isinstance(where, tuple) else (where,)
+
+
+def _latest_message_id(session: Session, where) -> int:
+    row = session.exec(select(ChatMessage.id).where(*_as_clauses(where)).order_by(ChatMessage.id.desc())).first()
+    return int(row or 0)
+
+
+def _count_unread(session: Session, where) -> int:
+    value = session.exec(select(sa_func.count()).select_from(ChatMessage).where(*_as_clauses(where))).one()
+    return int(value or 0)
+
+
+def _read_cursor(session: Session, user_id: int, channel_id: Optional[int] = None,
+                 peer_id: Optional[int] = None) -> Optional[ReadCursor]:
+    q = select(ReadCursor).where(ReadCursor.user_id == user_id)
+    if channel_id is not None:
+        q = q.where(ReadCursor.channel_id == channel_id)
+    else:
+        q = q.where(ReadCursor.peer_id == peer_id)
+    return session.exec(q).first()
+
+
+def _dm_where(user_id: int, peer_id: int):
+    return (
+        ChatMessage.channel_id == None,  # noqa: E711
+        ((ChatMessage.sender_id == user_id) & (ChatMessage.dm_to_user_id == peer_id)) |
+        ((ChatMessage.sender_id == peer_id) & (ChatMessage.dm_to_user_id == user_id)),
+    )
+
+
+class ReadIn(BaseModel):
+    channel_id: Optional[int] = None
+    peer_id: Optional[int] = None
+    message_id: Optional[int] = None
+
+
+@app.get("/chat/unreads")
+def chat_unreads(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    """Unread counts since the last channel or DM this person opened.
+
+    The first time we see someone, their cursor is set to the latest message so older history
+    is not badged. Messages that arrive after that stay unread until they open the conversation.
+    """
+    uid = current_user.id
+    channels_out: Dict[str, int] = {}
+    servers_out: Dict[str, int] = {}
+    for ch in session.exec(select(Channel).where(Channel.server_id.in_(list(_my_server_ids(session, uid))))).all():
+        if ch.channel_type == "voice":
+            continue
+        latest = _latest_message_id(session, ChatMessage.channel_id == ch.id)
+        cursor = _read_cursor(session, uid, channel_id=ch.id)
+        if cursor is None:
+            session.add(ReadCursor(user_id=uid, channel_id=ch.id, last_read_id=latest))
+            continue
+        count = _count_unread(session, (
+            ChatMessage.channel_id == ch.id,
+            ChatMessage.id > cursor.last_read_id,
+            ChatMessage.sender_id != uid,
+        ))
+        if count:
+            channels_out[str(ch.id)] = count
+            key = str(ch.server_id or 0)
+            servers_out[key] = servers_out.get(key, 0) + count
+    sent = session.exec(select(ChatMessage.dm_to_user_id).where(
+        ChatMessage.channel_id == None, ChatMessage.sender_id == uid)).all()  # noqa: E711
+    got = session.exec(select(ChatMessage.sender_id).where(
+        ChatMessage.channel_id == None, ChatMessage.dm_to_user_id == uid)).all()  # noqa: E711
+    # The first sync catches the person up on conversations that already existed.
+    # A direct message that arrives after that stays unread until they open it.
+    first_sync = session.exec(select(ReadCursor).where(
+        ReadCursor.user_id == uid,
+        ReadCursor.channel_id == None,  # noqa: E711
+        ReadCursor.peer_id == None,  # noqa: E711
+    )).first() is None
+    dms_out: Dict[str, int] = {}
+    for peer in {p for p in list(sent) + list(got) if p and p != uid}:
+        cond = _dm_where(uid, peer)
+        latest = _latest_message_id(session, cond)
+        cursor = _read_cursor(session, uid, peer_id=peer)
+        if cursor is None:
+            cursor = ReadCursor(user_id=uid, peer_id=peer, last_read_id=latest if first_sync else 0)
+            session.add(cursor)
+            if first_sync:
+                continue
+        count = _count_unread(session, (
+            *cond,
+            ChatMessage.id > cursor.last_read_id,
+            ChatMessage.sender_id != uid,
+        ))
+        if count:
+            dms_out[str(peer)] = count
+    if first_sync:
+        session.add(ReadCursor(user_id=uid, last_read_id=0))
+    session.commit()
+    return {"channels": channels_out, "servers": servers_out, "dms": dms_out}
+
+
+@app.put("/chat/read")
+def mark_chat_read(body: ReadIn, current_user: User = Depends(get_current_user),
+                   session: Session = Depends(get_session)):
+    if (body.channel_id is None) == (body.peer_id is None):
+        raise HTTPException(400, "Say which channel or conversation you read")
+    uid = current_user.id
+    if body.channel_id is not None:
+        ch = session.get(Channel, body.channel_id)
+        if not ch or not _is_server_member(session, uid, ch.server_id):
+            raise HTTPException(404, "Channel not found")
+        latest = _latest_message_id(session, ChatMessage.channel_id == ch.id)
+        cursor = _read_cursor(session, uid, channel_id=ch.id)
+        if cursor is None:
+            cursor = ReadCursor(user_id=uid, channel_id=ch.id)
+    else:
+        if not session.get(User, body.peer_id):
+            raise HTTPException(404, "Person not found")
+        latest = _latest_message_id(session, _dm_where(uid, body.peer_id))
+        cursor = _read_cursor(session, uid, peer_id=body.peer_id)
+        if cursor is None:
+            cursor = ReadCursor(user_id=uid, peer_id=body.peer_id)
+    target = latest if body.message_id is None else min(latest, max(0, int(body.message_id)))
+    cursor.last_read_id = max(cursor.last_read_id or 0, target)
+    session.add(cursor)
+    session.commit()
+    return {"ok": True, "last_read_id": cursor.last_read_id}
 
 
 @app.get("/chat/channels")
@@ -3488,7 +4029,8 @@ async def remove_server_icon(
 
 
 class ServerRename(BaseModel):
-    name: str
+    name: Optional[str] = None
+    is_public: Optional[bool] = None
 
 
 class MemberRoleUpdate(BaseModel):
@@ -3506,11 +4048,16 @@ def rename_server(
     if not srv:
         raise HTTPException(404, "Server not found")
     if not _can_manage_server(session, current_user, server_id):
-        raise HTTPException(403, "Only the owner or a moderator can rename this server")
-    name = body.name.strip()[:64]
-    if not name:
-        raise HTTPException(400, "Server name required")
-    srv.name = name
+        raise HTTPException(403, "Only the owner or a moderator can change this server")
+    if body.name is None and body.is_public is None:
+        raise HTTPException(400, "Nothing to change")
+    if body.name is not None:
+        name = body.name.strip()[:64]
+        if not name:
+            raise HTTPException(400, "Server name required")
+        srv.name = name
+    if body.is_public is not None:
+        srv.is_public = bool(body.is_public)
     session.add(srv)
     session.commit()
     mem = _server_membership(session, current_user.id, server_id)
@@ -4045,6 +4592,35 @@ async def create_invite(
     session.add(inv); session.commit(); session.refresh(inv)
     return {"code": code, "url": f"/invite/{code}", "channel_id": channel_id,
             "server_id": server_id, "expires_at": expires_at.isoformat() if expires_at else None}
+
+
+@app.get("/invite/{code}/preview")
+def preview_invite(code: str, session: Session = Depends(get_session)):
+    """Public look at an invite. Does not join the server or use up the link."""
+    inv = session.exec(select(InviteLink).where(InviteLink.code == code)).first()
+    if not inv:
+        raise HTTPException(404, "Invite not found")
+    now_utc = datetime.now(timezone.utc)
+    expired = bool(inv.expires_at and inv.expires_at.replace(tzinfo=timezone.utc) < now_utc)
+    full = bool(inv.max_uses and inv.uses >= inv.max_uses)
+    ch = session.get(Channel, inv.channel_id) if inv.channel_id else None
+    server_id = inv.server_id or (ch.server_id if ch else None)
+    srv = session.get(ChatServer, server_id) if server_id else None
+    members = 0
+    if server_id:
+        members = len(session.exec(select(ServerMember).where(ServerMember.server_id == server_id)).all())
+    inviter = session.get(User, inv.created_by)
+    if expired or full:
+        raise HTTPException(410, "This invite has expired" if expired else "This invite has been used up")
+    return {
+        "code": code,
+        "server_id": server_id,
+        "server_name": srv.name if srv else None,
+        "channel_id": inv.channel_id,
+        "channel_name": ch.name if ch else None,
+        "member_count": members,
+        "inviter": inviter.name if inviter else "Someone",
+    }
 
 
 @app.get("/invite/{code}")
